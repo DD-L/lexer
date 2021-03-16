@@ -73,7 +73,7 @@ namespace DDL_LEXER
 
         virtual ~Variable() {}
 
-        virtual bool Scan(std::size_t& offset, std::string& err) noexcept  
+        virtual bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept
         {
             return true;
         }
@@ -83,8 +83,8 @@ namespace DDL_LEXER
             return true;
         }
 
-    protected:
-        ScanContext   m_scanContext;
+    //protected:
+    //   ScanContext   m_scanContext;
     };
 
     // 终止符
@@ -95,15 +95,14 @@ namespace DDL_LEXER
             : m_token(token)
         {}
 
-        virtual bool Scan(std::size_t& offset, std::string& err) noexcept
+        virtual bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept
         {
-            if (offset + m_token.len > m_scanContext.script.len)
+            if ((offset + m_token.len) > script.len)
             {
                 return false;
             }
-            return 0 == std::memcmp(
-                m_scanContext.script + offset, 
-                m_token.str, m_token.len);
+
+            return 0 == std::memcmp(script + offset, m_token.str, m_token.len);
         }
 
     private:
@@ -128,12 +127,12 @@ namespace DDL_LEXER
             m_sequence.push_back(var);
         }
 
-        bool Scan(std::size_t& offset, std::string& err) noexcept override
+        bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
         {
             std::size_t oldOffset = offset;
             for (Variable* v : m_sequence)
             {
-                if (! v->Scan(offset, err))
+                if (! v->Scan(script, offset, err))
                 {
                     offset = oldOffset;
                     return false;
@@ -164,11 +163,11 @@ namespace DDL_LEXER
             m_branchs.push_back(var);
         }
 
-        bool Scan(std::size_t& offset, std::string& err) noexcept override
+        bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
         {
             for (Variable* v : m_branchs)
             {
-                if (v->Scan(offset, err))
+                if (v->Scan(script, offset, err))
                 {
                     return true;
                 }
@@ -191,12 +190,12 @@ namespace DDL_LEXER
             : m_var(var), m_min(min), m_max(max)
         {}
 
-        bool Scan(std::size_t& offset, std::string& err) noexcept override
+        bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
         {
             std::size_t oldOffset = offset;
             for (std::size_t i = 0; i < m_min; ++i)
             { // 最少循环 m_min 次
-                if (! m_var->Scan(offset, err))
+                if (! m_var->Scan(script, offset, err))
                 {
                     offset = oldOffset;
                     return false;
@@ -206,7 +205,7 @@ namespace DDL_LEXER
             for (std::size_t i = m_min; i < m_max; ++i)
             {
                 oldOffset = offset;
-                if (! m_var->Scan(offset, err))
+                if (! m_var->Scan(script, offset, err))
                 {
                     offset = oldOffset;
                     break;
@@ -263,17 +262,23 @@ namespace DDL_LEXER
         // 内建标识符
         class SyntaxIdent : public Variable
         { // [_a-zA-Z][_a-zA-Z0-9]*
-            bool Scan(std::size_t& offset, std::string& err) noexcept override
+        public:
+            explicit SyntaxIdent(StrRef name)
+                : m_tokenName(name)
+            {}
+
+        private:
+            bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
             {
                 // [_a-z-A-Z][_0-9a-zA-Z]*
                 // 最小要求是一个字符
-                if (offset >= m_scanContext.script.len)
+                if (offset >= script.len)
                 {
-                    err = m_scanContext.var.ToStdString() + ": atleast one bytes.....";
+                    err = m_tokenName.ToStdString() + ": atleast one bytes.....";
                     return false;
                 }
 
-                const char first = m_scanContext.script[offset++];
+                const char first = script[offset++];
 
                 if (!(('_' == first) 
                     || (first >= 'a' && first <= 'z')
@@ -282,21 +287,24 @@ namespace DDL_LEXER
                     return false;
                 }
 
-                for (; offset < m_scanContext.script.len; ++offset)
+                for (; offset < script.len; ++offset)
                 {
-                    const char ch = m_scanContext.script[offset];
+                    const char ch = script[offset];
                     if (!('_' == ch
                         || ch >= 'a' && ch <= 'z'
                         || ch >= 'A' && ch <= 'Z'
                         || ch >= '0' && ch <= '9'))
                     {
-                        err = m_scanContext.var.ToStdString() + ": Error";
+                        err = m_tokenName.ToStdString() + ": Error";
                         return false;
                     }
                 }
 
                 return true;
             }
+
+        private:
+            StrRef m_tokenName;
         }; // class SyntaxIdent
 
         // 表达式
@@ -307,7 +315,7 @@ namespace DDL_LEXER
         // 属性
         class SyntaxAttr : public Variable
         {
-            bool Scan(std::size_t& offset, std::string& err) noexcept override
+            bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
             {
                  
             }
@@ -315,11 +323,11 @@ namespace DDL_LEXER
 
         class SyntaxWhite : public Variable
         {
-            bool Scan(std::size_t& offset, std::string& err) noexcept override
+            bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
             {
-                if (offset < m_scanContext.script.len)
+                if (offset < script.len)
                 {
-                    switch (m_scanContext.script[offset])
+                    switch (script[offset])
                     {
                     case '\x09': // \t
                     case '\x0a': // \n
@@ -365,6 +373,14 @@ namespace DDL_LEXER
         std::deque<Variable*> m_vars;
     }; // 
 
+    //static inline bool InternalScan(Variable* v) noexcept
+    //{
+    //    assert(nullptr != v);
+    //
+    //    v->Scan();
+    //}
+
+
     class Lexer
     {
     public:
@@ -391,9 +407,9 @@ namespace DDL_LEXER
         }
 
     private:
-        static std::size_t LocateToRoot(const StrRef& script, const StrRef& root) noexcept
+        static std::size_t LocateToRoot(const StrRef& script, const StrRef& rootStr) noexcept
         {
-            if (root.len > script.len)
+            if (rootStr.len > script.len)
             {
                 return 0;
             }
@@ -413,16 +429,24 @@ namespace DDL_LEXER
             internal::SyntaxWhite _white;
             SyntaxLoop _whitesOption(&_white, 0, SyntaxLoop::Max);
              
-            SyntaxToken _root(root);
+            SyntaxToken _rootStr(rootStr);
             SyntaxBranch _last(&_white, &_0x3B);
 
-            SyntaxSequence state(&_0x3BOption, &_whitesOption, &_root, &_last);
+            SyntaxSequence state(&_0x3BOption, &_whitesOption, &_rootStr, &_last);
 
-            state.Scan();
+            const std::size_t end = script.len;
+            std::size_t offset    = 0;
 
+            std::string err;
+            while (offset < script.len)
+            {
+                if (state.Scan(script, offset, err))
+                {
+                    return (offset >= rootStr.len) ? (offset - rootStr.len) : end;
+                }
+            } 
 
-
-            return 0;
+            return end;
         }
 
         bool ScanScript(const StrRef& script, const VarsTable& varsTable, 
@@ -430,7 +454,7 @@ namespace DDL_LEXER
         {
             std::vector<StrRef> tokenStream; // TokenStream
 
-            if (m_internalRoot.Scan(offset, err))
+            if (m_internalRoot->Scan(script, offset, err))
             {
                 return script.len == offset;
             }
@@ -443,7 +467,7 @@ namespace DDL_LEXER
         bool MakeInternal() noexcept
         {
             // ident      : ; # func  (暂时使用函数)
-            Variable* ident = m_variableAllocator.Alloc<internal::SyntaxIdent>();
+            Variable* ident = m_variableAllocator.Alloc<internal::SyntaxIdent>("ident");
 
             // head       :  ident ;
             Variable* head = m_variableAllocator.Alloc<SyntaxSequence>(ident);
