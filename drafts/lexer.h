@@ -409,12 +409,12 @@ namespace DDL_LEXER
     private:
         static std::size_t LocateToRoot(const StrRef& script, const StrRef& rootStr) noexcept
         {
-            if (rootStr.len > script.len)
+            if (rootStr.len > script.len || 0 == rootStr.len)
             {
                 return 0;
             }
 
-            // .*;?\s*$root[\s:];
+            // .*?;?\s*$root[\s:]
             // State: Accept
             // 0. Start
             // 1. ;?
@@ -442,7 +442,8 @@ namespace DDL_LEXER
             {
                 if (state.Scan(script, offset, err))
                 {
-                    return (offset >= rootStr.len) ? (offset - rootStr.len) : end;
+                    assert(offset > 1);
+                    return (offset - 1u >= rootStr.len) ? (offset - 1u - rootStr.len) : end;
                 }
             } 
 
@@ -472,8 +473,13 @@ namespace DDL_LEXER
             // head       :  ident ;
             Variable* head = m_variableAllocator.Alloc<SyntaxSequence>(ident);
 
+            // var        : ident ;
+            //Variable* var  = m_variableAllocator.Alloc<SyntaxSequence>(ident);
+
             // token_0x3A  : ':' ;
             Variable* token_0x3A = m_variableAllocator.Alloc<SyntaxToken>(":");
+
+            // expr : 优先级 循环 > 序列 > 分支
 
             // expr      : ; # func (暂时使用函数)
             Variable* expr       = m_variableAllocator.Alloc<internal::SyntaxExpr>();
@@ -498,6 +504,7 @@ namespace DDL_LEXER
 
             // root:         production + ;
             m_internalRoot = m_variableAllocator.Alloc<SyntaxLoop>(production, 1u, SyntaxLoop::Max);
+
         }
 
     private:
@@ -506,20 +513,45 @@ namespace DDL_LEXER
     }; // class Lexer
 
 
+    /*
+char_1_9 : '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' ;
+char_0_9 : '0' | char_1_9 ;
 
-    ///////////////////////////////////
+num  :  char_1_9 char_0_9* | '0' ;
 
-    class Header
-    {};
 
-    class Body
-    {};
+loop_suffix_n_m   : '{' num ',' num '}' ;
+loop_suffix_n     : '{' num '}'         ;
+loop_suffix_n_max : '{' num ',' '}'     ;
 
-    class Production
-    {
-        Header  m_header;
-        Body    m_body;
-    };
+loop_suffix : '?' | '*' | '+' | loop_suffix_n_m | loop_suffix_n  | loop_suffix_n_max ;
+
+
+decl  branch;
+
+expr   : ident | ( branch )  ;
+
+loop   :  expr loop_suffix ? ; 
+seq    :  loop +             ;
+branch_vec : ( '|' seq )*    ; 
+branch :  seq  branch_vec    ;
+    
+    */
+
+
+    /////////////////////////////////////
+    //
+    //class Header
+    //{};
+    //
+    //class Body
+    //{};
+    //
+    //class Production
+    //{
+    //    Header  m_header;
+    //    Body    m_body;
+    //};
 
 
 
