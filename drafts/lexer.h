@@ -307,10 +307,10 @@ namespace DDL_LEXER
             StrRef m_tokenName;
         }; // class SyntaxIdent
 
-        // 表达式
-        class SyntaxExpr : public Variable
-        {
-        };
+        //// 表达式
+        //class SyntaxExpr : public Variable
+        //{
+        //};
 
         // 属性
         class SyntaxAttr : public Variable
@@ -341,6 +341,20 @@ namespace DDL_LEXER
                 return false;
             }
         }; // class SyntaxWhite
+
+        class NumDec : public Variable
+        { // [1-9][0-9]*|0
+
+            
+            bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
+            {
+                if (offset < script.len)
+                {
+                    std::size_t old_
+                    if (NotZero())
+                }
+            }
+        };
     } // namespace interanl
 
     // 
@@ -464,47 +478,97 @@ namespace DDL_LEXER
         }
 
     private:
+
+        template <class T, class... Args>
+        Variable* Alloc(Args&&...args) noexcept
+        {
+            return m_variableAllocator.Alloc(std::forward<Args>(args)...);
+        }
+
+        template <class T, class Var, class... Args>
+        Variable* PlacementAlloc(Var* var, Args&&...args) noexcept
+        {
+            var.~Var();
+            return new (var) T(std::forward<Args>(args)...);
+        }
+
         // internal: 内置语法
         bool MakeInternal() noexcept
         {
             // ident      : ; # func  (暂时使用函数)
-            Variable* ident = m_variableAllocator.Alloc<internal::SyntaxIdent>("ident");
+            Variable* ident = Alloc<internal::SyntaxIdent>("ident");
 
             // head       :  ident ;
-            Variable* head = m_variableAllocator.Alloc<SyntaxSequence>(ident);
+            Variable* head = Alloc<SyntaxSequence>(ident);
 
             // var        : ident ;
-            //Variable* var  = m_variableAllocator.Alloc<SyntaxSequence>(ident);
+            Variable* var  = Alloc<SyntaxSequence>(ident);
 
-            // token_0x3A  : ':' ;
-            Variable* token_0x3A = m_variableAllocator.Alloc<SyntaxToken>(":");
 
-            // expr : 优先级 循环 > 序列 > 分支
+            // expr : 优先级 循环 >  分支 > 序列
 
-            // expr      : ; # func (暂时使用函数)
-            Variable* expr       = m_variableAllocator.Alloc<internal::SyntaxExpr>();
+            Variable* $0x7B = Alloc<SyntaxToken>("{"); // 可复用
+            Variable* $0x7D = Alloc<SyntaxToken>("}"); // 可复用
+            Variable* $0x2C = Alloc<SyntaxToken>(","); // 可复用
 
-            // defaultBody: token_0x3A, expr;
-            Variable* defaultBody = m_variableAllocator.Alloc<SyntaxSequence>(token_0x3A, expr);
+            // decl expr;
+            Variable* expr = Alloc<Variable>();
+
+            // struct_with_bracket : '(' expr ')' ;
+            Variable* struct_with_bracket = Alloc<SyntaxSequence>(
+                Alloc<SyntaxToken>("("), expr, Alloc<SyntaxToken>(")"));
+
+            // struct_expr : var | struct_with_bracket # 这里 仅能容纳 var ??? 那正则表达式怎么办 ？？？TODO
+            Variable* struct_expr = Alloc<SyntaxBranch>(var, struct_with_bracket);
+
+            // num_dec regex : [1-9][0-9]*|0 ;
+            Variable* num_dec = Alloc<internal::NumDec>();
+
+            Variable* loop_n = Alloc<SyntaxSequence>($0x7B, num_dec, $0x7D);
+            // loop_m_n   : '{' num_dec ',' num_dec '}';
+            Variable* loop_m_n = Alloc<SyntaxSequence>($0x7B, num_dec, $0x2C, num_dec, $0x7D);
+            // loop_m_max : '{' num_dec ',' '}';
+            Variable* loop_m_max = Alloc<SyntaxSequence>($0x7B, num_dec, $0x2C, $0x7D);
+
+            // loop_symbol     : '?' | '*' | "+" | loop_n | loop_m_n | loop_m_max ;
+            Variable* loop_symbol = Alloc<SyntaxLoop>(
+                Alloc<SyntaxToken>("?"), Alloc<SyntaxToken>("*"), Alloc<SyntaxToken>("+"),
+                loop_n, loop_m_n, loop_m_max);
+            // loop_symbol_opt : loop_symbol ?
+            Variable* loop_symbol_opt = Alloc<SyntaxLoop>(loop_symbol, 0, 1u);
+            // loop_expr : struct_expr loop_symbol_opt;
+            Variable* loop_expr = Alloc<SyntaxSequence>(struct_expr, loop_symbol_opt);
+
+            // branch_expr      : '|' loop_expr  ;
+            Variable* branch_expr = Alloc<SyntaxSequence>(Alloc<SyntaxToken>("|"), loop_expr);
+            // branch_expr_some : branch_expr * ;
+            Variable* branch_expr_some = Alloc<SyntaxLoop>(branch_expr, 0, SyntaxLoop::Max);
+            // branch_pairs : loop_expr branch_expr_some ;
+            Variable* branch_pairs = Alloc<SyntaxSequence>(loop_expr, branch_expr_some);
+
+            // seq_expr  : branch_pairs + ;
+            Variable* seq_expr = Alloc<SyntaxLoop>(branch_pairs, 1u, SyntaxLoop::Max);
+
+            // expr      : seq_expr ; 
+            PlacementAlloc<SyntaxSequence>(expr, seq_expr);
+
+            // defaultBody: ':' expr;
+            Variable* defaultBody = Alloc<SyntaxSequence>(Alloc<SyntaxToken>(":"), expr);
             
             // attr      : ; # func  # func: 'regex' | 其他自定义白字符策略变量
-            Variable* attr = m_variableAllocator.Alloc<internal::SyntaxAttr>();
+            Variable* attr = Alloc<internal::SyntaxAttr>();
 
             // attrBody:    attr defaultBody;
-            Variable* attrBody  = m_variableAllocator.Alloc<SyntaxSequence>(attr, defaultBody);
+            Variable* attrBody  = Alloc<SyntaxSequence>(attr, defaultBody);
 
             // body: defaultBody | attrBody;
-            Variable* body  = m_variableAllocator.Alloc<SyntaxBranch>(defaultBody, attrBody);
+            Variable* body  = Alloc<SyntaxBranch>(defaultBody, attrBody);
 
-            // token_0x3B  : ';' ;
-            Variable* token_0x3B = m_variableAllocator.Alloc<SyntaxToken>(";");
-
-            // production :  head attrOption token_0x3A expr token_0x3B ; 
-            Variable* production = m_variableAllocator.Alloc<SyntaxSequence>(head, body, token_0x3B);
+            // production :  head body ';' ; 
+            Variable* production = Alloc<SyntaxSequence>(head, body, Alloc<SyntaxToken>(";"));
 
             // root:         production + ;
-            m_internalRoot = m_variableAllocator.Alloc<SyntaxLoop>(production, 1u, SyntaxLoop::Max);
-
+            m_internalRoot = Alloc<SyntaxLoop>(production, 1u, SyntaxLoop::Max);
         }
 
     private:
