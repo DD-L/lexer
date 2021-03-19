@@ -66,6 +66,16 @@ namespace DDL_LEXER
         StrRef    var;    // 当前变量   
     };
 
+
+    //
+    // 部分教材上侠义的将 Token 定义为 终结符; 而另外一些则将 非终结符 和 终结符 都称作为 Token
+    //   这里为了使没有编译原理知识背景的初学者更容易理解，刻意回避 Token 这个词，
+    //   改用 Variable 来表示可递归解释的结构助记符，就像数学中的代数一样，可以使用“变量”来代数：
+    //   算式： 1 + 2 + 1.1 + 3.4 - 4
+    //   令 a = 1.1; b = 3.4 
+    //   则 f(a, b) = 1 + 2 + a + b - 4; 
+    //   令 x = a + b 则 f(x) = 1 + 2 + x - 4;
+    //   这里的 a, b, x 都是代数 Algebra
     class Variable
     {
     public:
@@ -416,53 +426,54 @@ namespace DDL_LEXER
         {
             err.clear();
                       
-            std::size_t offset = LocateToRoot(script, root);
+            //std::size_t offset = LocateToRoot(script, root);
+            std::size_t offset = 0;
             return ScanScript(script, varsTable, offset, err);
         }
 
     private:
-        static std::size_t LocateToRoot(const StrRef& script, const StrRef& rootStr) noexcept
-        {
-            if (rootStr.len > script.len || 0 == rootStr.len)
-            {
-                return 0;
-            }
-
-            // .*?;?\s*$root[\s:]
-            // State: Accept
-            // 0. Start
-            // 1. ;?
-            // 2. \s*
-            // 3. $root
-            // 4. [\s:]
-            // 5. End
-
-            SyntaxToken _0x3B(";");
-            SyntaxLoop  _0x3BOption(&_0x3B, 0, 1u);
-
-            internal::SyntaxWhite _white;
-            SyntaxLoop _whitesOption(&_white, 0, SyntaxLoop::Max);
-             
-            SyntaxToken _rootStr(rootStr);
-            SyntaxBranch _last(&_white, &_0x3B);
-
-            SyntaxSequence state(&_0x3BOption, &_whitesOption, &_rootStr, &_last);
-
-            const std::size_t end = script.len;
-            std::size_t offset    = 0;
-
-            std::string err;
-            while (offset < script.len)
-            {
-                if (state.Scan(script, offset, err))
-                {
-                    assert(offset > 1);
-                    return (offset - 1u >= rootStr.len) ? (offset - 1u - rootStr.len) : end;
-                }
-            } 
-
-            return end;
-        }
+        //static std::size_t LocateToRoot(const StrRef& script, const StrRef& rootStr) noexcept
+        //{
+        //    if (rootStr.len > script.len || 0 == rootStr.len)
+        //    {
+        //        return 0;
+        //    }
+        //
+        //    // .*?;?\s*$root[\s:]
+        //    // State: Accept
+        //    // 0. Start
+        //    // 1. ;?
+        //    // 2. \s*
+        //    // 3. $root
+        //    // 4. [\s:]
+        //    // 5. End
+        //
+        //    SyntaxToken _0x3B(";");
+        //    SyntaxLoop  _0x3BOption(&_0x3B, 0, 1u);
+        //
+        //    internal::SyntaxWhite _white;
+        //    SyntaxLoop _whitesOption(&_white, 0, SyntaxLoop::Max);
+        //     
+        //    SyntaxToken _rootStr(rootStr);
+        //    SyntaxBranch _last(&_white, &_0x3B);
+        //
+        //    SyntaxSequence state(&_0x3BOption, &_whitesOption, &_rootStr, &_last);
+        //
+        //    const std::size_t end = script.len;
+        //    std::size_t offset    = 0;
+        //
+        //    std::string err;
+        //    while (offset < script.len)
+        //    {
+        //        if (state.Scan(script, offset, err))
+        //        {
+        //            assert(offset > 1);
+        //            return (offset - 1u >= rootStr.len) ? (offset - 1u - rootStr.len) : end;
+        //        }
+        //    } 
+        //
+        //    return end;
+        //}
 
         bool ScanScript(const StrRef& script, const VarsTable& varsTable, 
             std::size_t offset, std::string& err) const noexcept
@@ -497,13 +508,14 @@ namespace DDL_LEXER
         {
             // ident      : ; # func  (暂时使用函数)
             Variable* ident = Alloc<internal::SyntaxIdent>("ident");
-
             // head       :  ident ;
             Variable* head = Alloc<SyntaxSequence>(ident);
-
             // var        : ident ;
             Variable* var  = Alloc<SyntaxSequence>(ident);
-
+            // terminator    : '.*?'  # 这里暂时只使用单引号的终结符
+            Variable* terminator = Alloc<internal::Terminator>();
+            // operand 
+            Variable* operand = 
 
             // expr : 优先级 循环 >  分支 > 序列
 
