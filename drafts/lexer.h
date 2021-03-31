@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cctype>
+#include <cstring>
 #include <unordered_map>
 #include <functional>
 #include <vector>
@@ -59,177 +60,77 @@ namespace DDL_LEXER
         }
     }; //  StrRef
 
-    struct ScanContext
+    //struct ScanContext
+    //{
+    //    //const StrRef& script; // 脚本
+    //    StrRef    script; // 脚本
+    //    StrRef    var;    // 当前变量   
+    //};
+
+    class VariableAllocator;
+
+    enum class VariableFlag
     {
-        //const StrRef& script; // 脚本
-        StrRef    script; // 脚本
-        StrRef    var;    // 当前变量   
+        Normal,
+        Mutable,
     };
 
-
-    //
-    // 部分教材上侠义的将 Token 定义为 终结符; 而另外一些则将 非终结符 和 终结符 都称作为 Token
-    //   这里为了使没有编译原理知识背景的初学者更容易理解，刻意回避 Token 这个词，
-    //   改用 Variable 来表示可递归解释的结构助记符，就像数学中的代数一样，可以使用“变量”来代数：
-    //   算式： 1 + 2 + 1.1 + 3.4 - 4
-    //   令 a = 1.1; b = 3.4 
-    //   则 f(a, b) = 1 + 2 + a + b - 4; 
-    //   令 x = a + b 则 f(x) = 1 + 2 + x - 4;
-    //   这里的 a, b, x 都是代数 Algebra
+    // Syntax Variable 
     class Variable
     {
     public:
         Variable() = default;
+        explicit Variable(VariableFlag flag)
+            : m_flag(flag)
+        {}
 
-        virtual ~Variable() {}
+        virtual ~Variable() {
+            m_mut  = nullptr;
+            m_flag = VariableFlag::Normal;
+        }
 
         virtual bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept
         {
+            (void)script; (void)offset; (void)err;
             return true;
         }
 
-        virtual bool Action() noexcept 
+        virtual bool Action() noexcept { return true; }; // = 0; @TODO
+
+        bool IsMutable() const
         {
-            return true;
-        }
-
-    //protected:
-    //   ScanContext   m_scanContext;
-    };
-
-    // 终止符
-    class SyntaxToken : public Variable
-    {
-    public:
-        SyntaxToken(StrRef token)
-            : m_token(token)
-        {}
-
-        virtual bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept
-        {
-            if ((offset + m_token.len) > script.len)
-            {
-                return false;
-            }
-
-            return 0 == std::memcmp(script + offset, m_token.str, m_token.len);
-        }
-
-    private:
-        StrRef   m_token;
-    };
-
-    // Basic Structures (syntax/sentence structure)
-    class SyntaxSequence : public Variable
-    {
-    public:
-        template <class... Args>
-        explicit SyntaxSequence(Args&&... args)
-            : m_sequence({ std::forward(args) ... })
-        {}
-
-        explicit SyntaxSequence(std::vector<Variable*>&& branch)
-            : m_sequence(std::move(branch))
-        {}
-
-        void AppendVariable(Variable* var)
-        {
-            m_sequence.push_back(var);
-        }
-
-        bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
-        {
-            std::size_t oldOffset = offset;
-            for (Variable* v : m_sequence)
-            {
-                if (! v->Scan(script, offset, err))
-                {
-                    offset = oldOffset;
-                    return false;
-                }
-            }
-            return true;
+            return VariableFlag::Mutable == m_flag;
         }
 
     protected:
-        std::vector<Variable*>  m_sequence;
-    };
+         void SwapMut(Variable* newMut, Variable*& oldMut = ThreadLocalDummyVariable()) noexcept
+         {
+             oldMut = m_mut;
+             m_mut = newMut;
+         }
 
-    // 有序分支结构
-    class SyntaxBranch : public Variable
-    {
-    public:
-        template <class... Args>
-        explicit SyntaxBranch(Args&&... args)
-            : m_branchs({ std::forward(args) ... })
-        {}
+         static Variable*& ThreadLocalDummyVariable() noexcept
+         {
+             thread_local Variable* dummy = nullptr;
+             return dummy;
+         }
 
-        explicit SyntaxBranch(std::vector<Variable*>&& branch)
-            : m_branchs(std::move(branch))
-        {}
+        template <class Allocator>
+        void ReshapeToMut(Allocator& allocator) noexcept;
 
-        void AppendVariable(Variable* var)
+        // 只需 内置 SyntaxVar 重写 _Move 即可
+        virtual Variable* _Move(VariableAllocator& allocator) noexcept
         {
-            m_branchs.push_back(var);
-        }
-
-        bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
-        {
-            for (Variable* v : m_branchs)
-            {
-                if (v->Scan(script, offset, err))
-                {
-                    return true;
-                }
-            }
-
-            return false;
+            return nullptr; (void)allocator;
         }
 
     protected:
-        std::vector<Variable*>  m_branchs;
-    };
+        friend class Lexer;
 
-    class SyntaxLoop : public Variable
-    {
-    public:
-        static constexpr std::size_t Max = ~std::size_t(0);
-
-    public:
-        SyntaxLoop(Variable* var, std::size_t min, std::size_t max)
-            : m_var(var), m_min(min), m_max(max)
-        {}
-
-        bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
-        {
-            std::size_t oldOffset = offset;
-            for (std::size_t i = 0; i < m_min; ++i)
-            { // 最少循环 m_min 次
-                if (! m_var->Scan(script, offset, err))
-                {
-                    offset = oldOffset;
-                    return false;
-                }
-            }
-
-            for (std::size_t i = m_min; i < m_max; ++i)
-            {
-                oldOffset = offset;
-                if (! m_var->Scan(script, offset, err))
-                {
-                    offset = oldOffset;
-                    break;
-                }
-            }
-
-            return true;
-        }
-
-    protected:
-        Variable*   m_var = nullptr;
-        std::size_t m_min = 0;
-        std::size_t m_max = 0;
-    };
+        Variable*    m_mut = nullptr;  // 用作动态绑定，仅仅被用在 mut_var 的情况；
+        // 但有必须写在基类中，原因是确保其他子类对象可以被安全的重塑为 MutableVariable 对象
+        VariableFlag m_flag = VariableFlag::Normal;
+    }; // class Variable
 
     namespace traits
     {
@@ -256,24 +157,240 @@ namespace DDL_LEXER
                 return var;
             }
         };
-
-        template <>
-        struct AllocHelper<SyntaxSequence, 1u> : _AllocForwardFirstArg {};
-
-        template <>
-        struct AllocHelper<SyntaxBranch, 1u> : _AllocForwardFirstArg {};
-
-        template <>
-        struct AllocHelper<SyntaxLoop, 1u> : _AllocForwardFirstArg {};
     } // namespace traits
+
+    // 变量内存分配器，同时承担内存持有的职责
+    class VariableAllocator
+    {
+    public:
+        ~VariableAllocator() noexcept
+        {
+            Destroy();
+        }
+
+        template <class Syntax, class... Args>
+        Variable* Alloc(Args&&... args) noexcept;
+
+    private:
+        void Destroy() noexcept
+        {
+            for (Variable* v : m_vars)
+            {
+                delete v;
+            }
+
+            m_vars.clear();
+        }
+    private:
+        std::deque<Variable*>  m_vars;
+    }; // class VariableAllocator
 
     namespace internal
     {
+        //
+        // 一种动态绑定的 Variable.
+        // 其意义是尽可能的复用文法（运行期），或者前式声明（编译期）
+        class MutableVariable : public Variable
+        {
+        public:
+            explicit MutableVariable(Variable* mut = nullptr)
+                : Variable(VariableFlag::Mutable)
+            {
+                Set(mut);
+            }
+
+            bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
+            {
+                // 确保其他 Variable 衍生对象可以安全的重塑为 mut_var
+                static_assert(sizeof(MutableVariable) == sizeof(Variable), "Error"); 
+
+                assert(Valid());
+                return m_mut->Scan(script, offset, err);
+            }
+
+            bool Valid() const
+            {
+                return (nullptr != m_mut);
+            }
+
+            bool Set(Variable* newVar) noexcept
+            {
+                m_mut = newVar;
+                return Valid();
+            }
+        }; // class MutableVariable
+
+        // 终止符
+        class SyntaxToken : public Variable
+        {
+            typedef SyntaxToken _Myt;
+
+        public:
+            SyntaxToken(StrRef token)
+                : m_token(token)
+            {}
+
+            virtual bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept
+            {
+                if ((offset + m_token.len) > script.len)
+                {
+                    return false;
+                }
+
+                return 0 == std::memcmp(script + offset, m_token.str, m_token.len);
+            }
+        
+            virtual Variable* _Move(VariableAllocator& allocator) noexcept override
+            {
+                Variable* var = allocator.Alloc<SyntaxToken>(m_token);
+                this->~SyntaxToken();
+                return var;
+            }
+        private:
+            StrRef   m_token;
+        }; // class SyntaxToken
+
+        // Basic Structures (syntax/sentence structure)
+        class SyntaxSequence : public Variable
+        {
+        public:
+            template <class... Args>
+            explicit SyntaxSequence(Args&&... args)
+                : m_sequence({ std::forward(args) ... })
+            {}
+
+            explicit SyntaxSequence(std::vector<Variable*>&& branch)
+                : m_sequence(std::move(branch))
+            {}
+
+            void AppendVariable(Variable* var)
+            {
+                m_sequence.push_back(var);
+            }
+
+            bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
+            {
+                std::size_t oldOffset = offset;
+                for (Variable* v : m_sequence)
+                {
+                    if (!v->Scan(script, offset, err))
+                    {
+                        offset = oldOffset;
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            virtual Variable* _Move(VariableAllocator& allocator) noexcept override
+            {
+                Variable* var = allocator.Alloc<SyntaxSequence>(std::move(m_sequence));
+                this->~SyntaxSequence();
+                return var;
+            }
+
+        protected:
+            std::vector<Variable*>  m_sequence;
+        }; // class SyntaxSequence
+
+        // 有序分支结构
+        class SyntaxBranch : public Variable
+        {
+        public:
+            template <class... Args>
+            explicit SyntaxBranch(Args&&... args)
+                : m_branchs({ std::forward(args) ... })
+            {}
+
+            explicit SyntaxBranch(std::vector<Variable*>&& branch)
+                : m_branchs(std::move(branch))
+            {}
+
+            void AppendVariable(Variable* var)
+            {
+                m_branchs.push_back(var);
+            }
+
+            bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
+            {
+                for (Variable* v : m_branchs)
+                {
+                    if (v->Scan(script, offset, err))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            virtual Variable* _Move(VariableAllocator& allocator) noexcept override
+            {
+                Variable* var = allocator.Alloc<SyntaxBranch>(std::move(m_branchs));
+                this->~SyntaxBranch();
+                return var;
+            }
+
+        protected:
+            std::vector<Variable*>  m_branchs;
+        }; // class SyntaxBranch
+
+        class SyntaxLoop : public Variable
+        {
+        public:
+            static constexpr std::size_t Max = ~std::size_t(0);
+
+        public:
+            SyntaxLoop(Variable* var, std::size_t min, std::size_t max)
+                : m_var(var), m_min(min), m_max(max)
+            {}
+
+            bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
+            {
+                std::size_t oldOffset = offset;
+                for (std::size_t i = 0; i < m_min; ++i)
+                { // 最少循环 m_min 次
+                    if (!m_var->Scan(script, offset, err))
+                    {
+                        offset = oldOffset;
+                        return false;
+                    }
+                }
+
+                for (std::size_t i = m_min; i < m_max; ++i)
+                {
+                    oldOffset = offset;
+                    if (!m_var->Scan(script, offset, err))
+                    {
+                        offset = oldOffset;
+                        break;
+                    }
+                }
+
+                return true;
+            }
+
+            virtual Variable* _Move(VariableAllocator& allocator) noexcept override
+            {
+                Variable* var = allocator.Alloc<SyntaxLoop>(m_var, m_min, m_max);
+                this->~SyntaxLoop();
+                return var;
+            }
+
+        protected:
+            Variable*   m_var = nullptr;
+            std::size_t m_min = 0;
+            std::size_t m_max = 0;
+        }; // class SyntaxLoop
+
+        ///////////////////////////////////////////////////////////////
+
+
         // 内建标识符
-        class SyntaxIdent : public Variable
+        class BuiltinIdent : public Variable
         { // [_a-zA-Z][_a-zA-Z0-9]*
         public:
-            explicit SyntaxIdent(StrRef name)
+            explicit BuiltinIdent(StrRef name)
                 : m_tokenName(name)
             {}
 
@@ -301,9 +418,9 @@ namespace DDL_LEXER
                 {
                     const char ch = script[offset];
                     if (!('_' == ch
-                        || ch >= 'a' && ch <= 'z'
-                        || ch >= 'A' && ch <= 'Z'
-                        || ch >= '0' && ch <= '9'))
+                        || (ch >= 'a' && ch <= 'z')
+                        || (ch >= 'A' && ch <= 'Z')
+                        || (ch >= '0' && ch <= '9')))
                     {
                         err = m_tokenName.ToStdString() + ": Error";
                         return false;
@@ -315,23 +432,19 @@ namespace DDL_LEXER
 
         private:
             StrRef m_tokenName;
-        }; // class SyntaxIdent
+        }; // class BuiltinIdent
 
-        //// 表达式
-        //class SyntaxExpr : public Variable
-        //{
-        //};
 
         // 属性
-        class SyntaxAttr : public Variable
+        class BuiltinAttr : public Variable
         {
             bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
             {
-                 
+                return true;
             }
         };
 
-        class SyntaxWhite : public Variable
+        class BuiltinWhite : public Variable
         {
             bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
             {
@@ -339,7 +452,7 @@ namespace DDL_LEXER
                 {
                     switch (script[offset])
                     {
-                    case '\x09': // \t
+                    case '\x09': // \t 
                     case '\x0a': // \n
                     case '\x0b': // \v
                     case '\x0c': // \f
@@ -350,60 +463,80 @@ namespace DDL_LEXER
                 }
                 return false;
             }
-        }; // class SyntaxWhite
+        }; // class BuiltinWhite
 
-        class NumDec : public Variable
+        class BuiltinNaturalNumDec : public Variable
         { // [1-9][0-9]*|0
-
-            
             bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
-            {
+            { // 十进制自然数
                 if (offset < script.len)
                 {
-                    std::size_t old_
-                    if (NotZero())
+                    if (IsZero(script[offset])) { ++offset; return true; }
+
+                    if (Is1To9(script[offset]))
+                    {
+                        ++offset;
+
+                        while (offset < script.len)
+                        {
+                            if (Is0To9(script[offset]))
+                            {
+                                ++offset;
+                            }
+                            else
+                            {
+                                break;
+                            }
+                        }
+                        return true;
+                    }
                 }
+                return false;
+            }
+
+            bool IsZero(char c) const { return '0' == c; }
+            bool Is1To9(char c) const { return '1' <= c && c <= '9'; }
+            bool Is0To9(char c) const { return IsZero(c) || Is1To9(c); }
+        }; // class BuiltinNaturalNumDec
+
+        // 内置终结符的表达方式：单引号或双引号
+        class BuiltinTerminator : public Variable
+        {
+            // 1. 单引号不支持转义，2. 双引号支持转义
+            bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
+            {
+                // 1. 单引号： '[^']+
+                // 2. 双引号： 暂不实现
+                if (offset < script.len)
+                {
+                    if ('\'' == script[offset])
+                    {
+                        ++offset;
+                        while (offset < script.len)
+                        {
+                            if ('\'' == script[offset++])
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                return false;
             }
         };
-    } // namespace interanl
+    } // namespace internal
 
-    // 
-    class VariableAllocator
+    namespace traits
     {
-    public:
-        ~VariableAllocator() noexcept
-        {
-            Destroy();
-        }
+        template <>
+        struct AllocHelper<DDL_LEXER::internal::SyntaxSequence, 1u> : _AllocForwardFirstArg {};
 
-        template <class Syntax, class... Args>
-        Variable* Alloc(Args&&... args) noexcept
-        {
-            traits::AllocHelper<Syntax, (sizeof...(args))> allocHelper;
-            return allocHelper(m_vars, std::forward<Args>(args)...);
-        }
+        template <>
+        struct AllocHelper<DDL_LEXER::internal::SyntaxBranch, 1u> : _AllocForwardFirstArg {};
 
-    private:
-        void Destroy() noexcept
-        {
-            for (Variable* v : m_vars)
-            {
-                delete v;
-            }
-
-            m_vars.clear();
-        }
-    private:
-        std::deque<Variable*> m_vars;
-    }; // 
-
-    //static inline bool InternalScan(Variable* v) noexcept
-    //{
-    //    assert(nullptr != v);
-    //
-    //    v->Scan();
-    //}
-
+        template <>
+        struct AllocHelper<DDL_LEXER::internal::SyntaxLoop, 1u> : _AllocForwardFirstArg {};
+    } // namespace traits
 
     class Lexer
     {
@@ -422,13 +555,21 @@ namespace DDL_LEXER
         }
 
         // 线程无关
-        bool SetGrammar(StrRef script, StrRef root, const VarsTable& varsTable, std::string& err) const noexcept
+        bool SetGrammar(StrRef script, const VarsTable& varsTable, std::string& err) const noexcept
         {
             err.clear();
-                      
-            //std::size_t offset = LocateToRoot(script, root);
             std::size_t offset = 0;
             return ScanScript(script, varsTable, offset, err);
+        }
+
+        const Variable* GetVariable(const std::string& varName) noexcept
+        {
+            auto found = m_userVariablesMap.find(varName);
+            if (m_userVariablesMap.end() != found)
+            {
+                return found->second;
+            }
+            return nullptr;
         }
 
     private:
@@ -451,7 +592,7 @@ namespace DDL_LEXER
         //    SyntaxToken _0x3B(";");
         //    SyntaxLoop  _0x3BOption(&_0x3B, 0, 1u);
         //
-        //    internal::SyntaxWhite _white;
+        //    internal::BuiltinWhite _white;
         //    SyntaxLoop _whitesOption(&_white, 0, SyntaxLoop::Max);
         //     
         //    SyntaxToken _rootStr(rootStr);
@@ -496,26 +637,29 @@ namespace DDL_LEXER
             return m_variableAllocator.Alloc(std::forward<Args>(args)...);
         }
 
-        template <class T, class Var, class... Args>
-        Variable* PlacementAlloc(Var* var, Args&&...args) noexcept
-        {
-            var.~Var();
-            return new (var) T(std::forward<Args>(args)...);
-        }
+        //template <class T, class Var, class... Args>
+        //Variable* PlacementAlloc(Var* var, Args&&...args) noexcept
+        //{
+        //    var.~Var();
+        //    return new (var) T(std::forward<Args>(args)...);
+        //}
 
         // internal: 内置语法
         bool MakeInternal() noexcept
         {
+            using namespace internal;
             // ident      : ; # func  (暂时使用函数)
-            Variable* ident = Alloc<internal::SyntaxIdent>("ident");
+            Variable* ident = Alloc<BuiltinIdent>("ident");
             // head       :  ident ;
             Variable* head = Alloc<SyntaxSequence>(ident);
             // var        : ident ;
             Variable* var  = Alloc<SyntaxSequence>(ident);
-            // terminator    : '.*?'  # 这里暂时只使用单引号的终结符
-            Variable* terminator = Alloc<internal::Terminator>();
+
+            // terminator    : '.*?'  # 这里暂时只使用单引号的终结符 (内部 CFG 文法中终结符的表示)
+            Variable* terminator = Alloc<BuiltinTerminator>();
+
             // operand 
-            Variable* operand = 
+            Variable* operand = Alloc<SyntaxBranch>(terminator, var);
 
             // expr : 优先级 循环 >  分支 > 序列
 
@@ -524,17 +668,17 @@ namespace DDL_LEXER
             Variable* $0x2C = Alloc<SyntaxToken>(","); // 可复用
 
             // decl expr;
-            Variable* expr = Alloc<Variable>();
+            Variable* expr = Alloc<MutableVariable>(); // mut_var
 
             // struct_with_bracket : '(' expr ')' ;
             Variable* struct_with_bracket = Alloc<SyntaxSequence>(
                 Alloc<SyntaxToken>("("), expr, Alloc<SyntaxToken>(")"));
 
-            // struct_expr : var | struct_with_bracket # 这里 仅能容纳 var ??? 那正则表达式怎么办 ？？？TODO
-            Variable* struct_expr = Alloc<SyntaxBranch>(var, struct_with_bracket);
+            // struct_expr : operand | struct_with_bracket # 这里 仅能容纳 var ??? 那正则表达式怎么办 ？？？TODO,  可以使用变量！！！！
+            Variable* struct_expr = Alloc<SyntaxBranch>(operand, struct_with_bracket);
 
             // num_dec regex : [1-9][0-9]*|0 ;
-            Variable* num_dec = Alloc<internal::NumDec>();
+            Variable* num_dec = Alloc<BuiltinNaturalNumDec>();
 
             Variable* loop_n = Alloc<SyntaxSequence>($0x7B, num_dec, $0x7D);
             // loop_m_n   : '{' num_dec ',' num_dec '}';
@@ -562,13 +706,14 @@ namespace DDL_LEXER
             Variable* seq_expr = Alloc<SyntaxLoop>(branch_pairs, 1u, SyntaxLoop::Max);
 
             // expr      : seq_expr ; 
-            PlacementAlloc<SyntaxSequence>(expr, seq_expr);
+            assert(expr->IsMutable());
+            expr->SwapMut(seq_expr);
 
             // defaultBody: ':' expr;
             Variable* defaultBody = Alloc<SyntaxSequence>(Alloc<SyntaxToken>(":"), expr);
             
             // attr      : ; # func  # func: 'regex' | 其他自定义白字符策略变量
-            Variable* attr = Alloc<internal::SyntaxAttr>();
+            Variable* attr = Alloc<internal::BuiltinAttr>();
 
             // attrBody:    attr defaultBody;
             Variable* attrBody  = Alloc<SyntaxSequence>(attr, defaultBody);
@@ -584,8 +729,9 @@ namespace DDL_LEXER
         }
 
     private:
-        Variable*           m_internalRoot;
-        VariableAllocator   m_variableAllocator;
+        Variable*                                  m_internalRoot;
+        VariableAllocator                          m_variableAllocator;
+        std::unordered_map<std::string, Variable*> m_userVariablesMap;
     }; // class Lexer
 
 
@@ -614,21 +760,26 @@ branch :  seq  branch_vec    ;
     
     */
 
+    //////////////////////////////////////////////
+    // Impl
 
-    /////////////////////////////////////
-    //
-    //class Header
-    //{};
-    //
-    //class Body
-    //{};
-    //
-    //class Production
-    //{
-    //    Header  m_header;
-    //    Body    m_body;
-    //};
+    template <class Allocator>
+    void Variable::ReshapeToMut(Allocator& allocator) noexcept
+    {
+        if (!IsMutable())
+        {
+            Variable* var = _Move(allocator);
+
+            new (this) internal::MutableVariable();
+            this->m_mut = var;
+        }
+    }
 
 
-
+    template <class Syntax, class... Args>
+    Variable* VariableAllocator::Alloc(Args&&... args) noexcept
+    {
+        traits::AllocHelper<Syntax, (sizeof...(args))> allocHelper;
+        return allocHelper(m_vars, std::forward<Args>(args)...);
+    }
 } // namespace DDL_LEXER
