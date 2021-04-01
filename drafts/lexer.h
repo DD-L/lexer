@@ -7,6 +7,7 @@
 
 #include <cctype>
 #include <cstring>
+#include <utility>
 #include <unordered_map>
 #include <functional>
 #include <vector>
@@ -134,11 +135,17 @@ namespace DDL_LEXER
 
     namespace traits
     {
-        template <class Syntax, std::size_t>
+        //template <class Syntax>
         struct AllocHelper
         {
-            template <class Vars, class... Args>
-            Variable* operator()(Vars& vars, Args&&... args) const noexcept
+            template <class Syntax, class Vars>
+            static Variable* Alloc(Vars&, Variable* newVar) noexcept
+            {
+                return newVar;
+            }
+
+            template <class Syntax, class Vars, class... Args>
+            static Variable* Alloc(Vars& vars, Args&&... args) noexcept
             {
                 Variable* var = new (std::nothrow) Syntax(std::forward<Args>(args)...);
                 if (var)
@@ -149,14 +156,14 @@ namespace DDL_LEXER
             }
         };
 
-        struct _AllocForwardFirstArg
-        {
-            template <class Vars>
-            Variable* operator()(Vars&, Variable* var) const noexcept
-            {
-                return var;
-            }
-        };
+        //struct _AllocForwardFirstArg
+        //{
+        //    template <class Vars>
+        //    Variable* operator()(Vars&, Variable* var) const noexcept
+        //    {
+        //        return var;
+        //    }
+        //};
     } // namespace traits
 
     // 变量内存分配器，同时承担内存持有的职责
@@ -169,7 +176,11 @@ namespace DDL_LEXER
         }
 
         template <class Syntax, class... Args>
-        Variable* Alloc(Args&&... args) noexcept;
+        Variable* Alloc(Args&&... args) noexcept
+        {
+            typedef DDL_LEXER::traits::AllocHelper AllocHelper;
+            return AllocHelper::Alloc<Syntax>(m_vars, std::forward<Args>(args)...);
+        }
 
     private:
         void Destroy() noexcept
@@ -256,7 +267,7 @@ namespace DDL_LEXER
         public:
             template <class... Args>
             explicit SyntaxSequence(Args&&... args)
-                : m_sequence({ std::forward(args) ... })
+                : m_sequence({ std::forward<Args>(args) ... })
             {}
 
             explicit SyntaxSequence(std::vector<Variable*>&& branch)
@@ -299,7 +310,7 @@ namespace DDL_LEXER
         public:
             template <class... Args>
             explicit SyntaxBranch(Args&&... args)
-                : m_branchs({ std::forward(args) ... })
+                : m_branchs({ std::forward<Args>(args) ... })
             {}
 
             explicit SyntaxBranch(std::vector<Variable*>&& branch)
@@ -526,17 +537,17 @@ namespace DDL_LEXER
         };
     } // namespace internal
 
-    namespace traits
-    {
-        template <>
-        struct AllocHelper<DDL_LEXER::internal::SyntaxSequence, 1u> : _AllocForwardFirstArg {};
-
-        template <>
-        struct AllocHelper<DDL_LEXER::internal::SyntaxBranch, 1u> : _AllocForwardFirstArg {};
-
-        template <>
-        struct AllocHelper<DDL_LEXER::internal::SyntaxLoop, 1u> : _AllocForwardFirstArg {};
-    } // namespace traits
+    //namespace traits
+    //{
+    //    template <>
+    //    struct AllocHelper<DDL_LEXER::internal::SyntaxSequence, 1u> : _AllocForwardFirstArg {};
+    //
+    //    template <>
+    //    struct AllocHelper<DDL_LEXER::internal::SyntaxBranch, 1u> : _AllocForwardFirstArg {};
+    //
+    //    template <>
+    //    struct AllocHelper<DDL_LEXER::internal::SyntaxLoop, 1u> : _AllocForwardFirstArg {};
+    //} // namespace traits
 
     class Lexer
     {
@@ -616,7 +627,7 @@ namespace DDL_LEXER
         //    return end;
         //}
 
-        bool ScanScript(const StrRef& script, const VarsTable& varsTable, 
+        bool ScanScript(const StrRef& script, const VarsTable&, 
             std::size_t offset, std::string& err) const noexcept
         {
             std::vector<StrRef> tokenStream; // TokenStream
@@ -634,7 +645,7 @@ namespace DDL_LEXER
         template <class T, class... Args>
         Variable* Alloc(Args&&...args) noexcept
         {
-            return m_variableAllocator.Alloc(std::forward<Args>(args)...);
+            return m_variableAllocator.Alloc<T>(std::forward<Args>(args)...);
         }
 
         //template <class T, class Var, class... Args>
@@ -687,7 +698,7 @@ namespace DDL_LEXER
             Variable* loop_m_max = Alloc<SyntaxSequence>($0x7B, num_dec, $0x2C, $0x7D);
 
             // loop_symbol     : '?' | '*' | "+" | loop_n | loop_m_n | loop_m_max ;
-            Variable* loop_symbol = Alloc<SyntaxLoop>(
+            Variable* loop_symbol = Alloc<SyntaxBranch>(
                 Alloc<SyntaxToken>("?"), Alloc<SyntaxToken>("*"), Alloc<SyntaxToken>("+"),
                 loop_n, loop_m_n, loop_m_max);
             // loop_symbol_opt : loop_symbol ?
@@ -726,6 +737,7 @@ namespace DDL_LEXER
 
             // root:         production + ;
             m_internalRoot = Alloc<SyntaxLoop>(production, 1u, SyntaxLoop::Max);
+            return true;
         }
 
     private:
@@ -776,10 +788,9 @@ branch :  seq  branch_vec    ;
     }
 
 
-    template <class Syntax, class... Args>
-    Variable* VariableAllocator::Alloc(Args&&... args) noexcept
-    {
-        traits::AllocHelper<Syntax, (sizeof...(args))> allocHelper;
-        return allocHelper(m_vars, std::forward<Args>(args)...);
-    }
+    //template <class Syntax, class... Args>
+    //Variable* VariableAllocator::Alloc(Args&&... args) noexcept
+    //{
+    //    return traits::AllocHelper<Syntax>::Alloc(m_vars, std::forward<Args>(args)...);
+    //}
 } // namespace DDL_LEXER
