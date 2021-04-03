@@ -262,13 +262,19 @@ namespace DDL_LEXER
                     return false;
                 }
 
+                std::size_t oldOffset = offset;
                 if (m_leftWhites)
                 {
                     std::string e;
                     m_leftWhites->Scan(script, offset, e); (void)e;
                 }
 
-                return ScanImpl(script, offset, err);
+                if (ScanImpl(script, offset, err))
+                {
+                    return true;
+                }
+                offset = oldOffset; // 恢复前面白字符的消耗 ？？ @TODO 有必要 ？？？？
+                return false;
             }
         
             virtual bool ScanImpl(const StrRef& script, std::size_t& offset, std::string& err) noexcept
@@ -324,7 +330,13 @@ namespace DDL_LEXER
                     }
                     ++cnt;
                 }
-                return m_sequence.size() == cnt;
+
+                if (m_sequence.size() == cnt)
+                {
+                    return true;
+                }
+                offset = oldOffset;
+                return false;
             }
 
             virtual Variable* _Move(VariableAllocator& allocator) noexcept override
@@ -383,7 +395,6 @@ namespace DDL_LEXER
         class SyntaxLoop : public Variable
         {
         public:
-            //static constexpr std::size_t Max = ~std::size_t(0);
             enum : std::size_t
             {
                 Max = ~std::size_t(0)
@@ -410,7 +421,7 @@ namespace DDL_LEXER
                 for (std::size_t i = m_min; i < m_max; ++i, ++cnt)
                 {
                     oldOffset = offset;
-                    if (!m_var->Scan(script, offset, err))
+                    if (! m_var->Scan(script, offset, err))
                     {
                         offset = oldOffset;
                         break;
@@ -418,6 +429,12 @@ namespace DDL_LEXER
                 }
 
                 return ((m_min <= cnt) && (cnt <= m_max));
+                //if ((m_min <= cnt) && (cnt <= m_max))
+                //{
+                //    return true;
+                //}
+                //offset = oldOffset;
+                //return false;
             }
 
             virtual Variable* _Move(VariableAllocator& allocator) noexcept override
@@ -530,7 +547,12 @@ namespace DDL_LEXER
 
                 if (curOffset < script.len)
                 {
-                    if (IsZero(script[curOffset])) { ++curOffset; return true; }
+                    if (IsZero(script[curOffset])) 
+                    { 
+                        ++curOffset; 
+                        offset = curOffset; 
+                        return true; 
+                    }
 
                     if (Is1To9(script[curOffset]))
                     {
@@ -766,15 +788,18 @@ namespace DDL_LEXER
             // num_dec regex : [1-9][0-9]*|0 ;
             Variable* num_dec = Alloc<BuiltinNaturalNumDec>("num_dec");
 
-            Variable* loop_n = Alloc<SyntaxSequence>("loop_n", $0x7B, num_dec, $0x7D);
+            Variable* loop_n = Alloc<SyntaxSequence>("loop_n", $0x7B, whites, num_dec, $0x7D);
             // loop_m_n   : '{' num_dec ',' num_dec '}';
-            Variable* loop_m_n = Alloc<SyntaxSequence>("loop_m_n", $0x7B, num_dec, $0x2C, num_dec, $0x7D);
+            Variable* loop_m_n = Alloc<SyntaxSequence>("loop_m_n", 
+                $0x7B, whites, num_dec, $0x2C, whites, num_dec, $0x7D);
             // loop_m_max : '{' num_dec ',' '}';
-            Variable* loop_m_max = Alloc<SyntaxSequence>("loop_m_max", $0x7B, num_dec, $0x2C, $0x7D);
+            Variable* loop_m_max = Alloc<SyntaxSequence>("loop_m_max", $0x7B, whites, num_dec, $0x2C, $0x7D);
 
             // loop_symbol     : '?' | '*' | "+" | loop_n | loop_m_n | loop_m_max ;
             Variable* loop_symbol = Alloc<SyntaxBranch>("loop_symbol",
-                Alloc<SyntaxToken>("?", "?"), Alloc<SyntaxToken>("*", "*"), Alloc<SyntaxToken>("+", "+"),
+                Alloc<SyntaxToken>("?", "?", whites), 
+                Alloc<SyntaxToken>("*", "*", whites), 
+                Alloc<SyntaxToken>("+", "+", whites),
                 loop_n, loop_m_n, loop_m_max);
             // loop_symbol_opt : loop_symbol ?
             Variable* loop_symbol_opt = Alloc<SyntaxLoop>("loop_symbol_opt", loop_symbol, 0, 1u);
