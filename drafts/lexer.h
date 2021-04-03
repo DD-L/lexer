@@ -80,9 +80,10 @@ namespace DDL_LEXER
         {}
 
         virtual ~Variable() {
-            m_mut  = nullptr;
+            m_mut = nullptr;
             m_flag = VariableFlag::Normal;
         }
+
 
         virtual bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept
         {
@@ -98,6 +99,16 @@ namespace DDL_LEXER
         }
 
     protected:
+         void SetName(StrRef name) noexcept
+         {
+             m_varName = name;
+         }
+
+         const StrRef& Name() const
+         {
+             return m_varName;
+         }
+
          void SwapMut(Variable* newMut, Variable*& oldMut = ThreadLocalDummyVariable()) noexcept
          {
              oldMut = m_mut;
@@ -125,6 +136,7 @@ namespace DDL_LEXER
         Variable*    m_mut = nullptr;  // 用作动态绑定，仅仅被用在 mut_var 的情况；
         // 但有必须写在基类中，原因是确保其他子类对象可以被安全的重塑为 MutableVariable 对象
         VariableFlag m_flag = VariableFlag::Normal;
+        StrRef       m_varName;
     }; // class Variable
 
     namespace traits
@@ -222,9 +234,26 @@ namespace DDL_LEXER
             typedef SyntaxToken _Myt;
 
         public:
+            SyntaxToken() = default;
+
             SyntaxToken(StrRef token)
                 : m_token(token)
             {}
+
+            [[nodiscard]] bool AddLeftWhites(Variable* whites) noexcept
+            { // 要求：当前 Token 被当前设定的白字符从左到右 Scan，不能出现被消耗字符的情况
+                std::size_t offset = 0;
+                if (whites)
+                { 
+                    m_leftWhites = nullptr;
+
+                    std::string e;
+                    whites->Scan(m_token, offset, e); (void)e;
+                }
+
+                m_leftWhites = whites;
+                return (0 == offset);
+            }
 
             virtual bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept
             {
@@ -233,9 +262,25 @@ namespace DDL_LEXER
                     return false;
                 }
 
-                return 0 == std::memcmp(script + offset, m_token.str, m_token.len);
+                if (m_leftWhites)
+                {
+                    std::string e;
+                    m_leftWhites->Scan(script, offset, e); (void)e;
+                }
+
+                return ScanImpl(script, offset, err);
             }
         
+            virtual bool ScanImpl(const StrRef& script, std::size_t& offset, std::string& err) noexcept
+            {
+                if (0 == std::memcmp(script + offset, m_token.str, m_token.len))
+                {
+                    offset += m_token.len;
+                    return true;
+                }
+                return false;
+            }
+
             virtual Variable* _Move(VariableAllocator& allocator) noexcept override
             {
                 Variable* var = allocator.Alloc<SyntaxToken>(m_token);
@@ -243,7 +288,9 @@ namespace DDL_LEXER
                 return var;
             }
         private:
-            StrRef   m_token;
+            StrRef    m_token;
+            Variable* m_leftWhites  = nullptr;
+            //Variable* m_rightWhites = nullptr;
         }; // class SyntaxToken
 
         // Basic Structures (syntax/sentence structure)
@@ -267,6 +314,7 @@ namespace DDL_LEXER
             bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
             {
                 std::size_t oldOffset = offset;
+                std::size_t cnt = 0;
                 for (Variable* v : m_sequence)
                 {
                     if (!v->Scan(script, offset, err))
@@ -274,8 +322,9 @@ namespace DDL_LEXER
                         offset = oldOffset;
                         return false;
                     }
+                    ++cnt;
                 }
-                return true;
+                return m_sequence.size() == cnt;
             }
 
             virtual Variable* _Move(VariableAllocator& allocator) noexcept override
@@ -334,7 +383,11 @@ namespace DDL_LEXER
         class SyntaxLoop : public Variable
         {
         public:
-            static constexpr std::size_t Max = ~std::size_t(0);
+            //static constexpr std::size_t Max = ~std::size_t(0);
+            enum : std::size_t
+            {
+                Max = ~std::size_t(0)
+            };
 
         public:
             SyntaxLoop(Variable* var, std::size_t min, std::size_t max)
@@ -344,7 +397,8 @@ namespace DDL_LEXER
             bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
             {
                 std::size_t oldOffset = offset;
-                for (std::size_t i = 0; i < m_min; ++i)
+                std::size_t cnt = 0;
+                for (std::size_t i = 0; i < m_min; ++i, ++cnt)
                 { // 最少循环 m_min 次
                     if (!m_var->Scan(script, offset, err))
                     {
@@ -353,7 +407,7 @@ namespace DDL_LEXER
                     }
                 }
 
-                for (std::size_t i = m_min; i < m_max; ++i)
+                for (std::size_t i = m_min; i < m_max; ++i, ++cnt)
                 {
                     oldOffset = offset;
                     if (!m_var->Scan(script, offset, err))
@@ -363,7 +417,7 @@ namespace DDL_LEXER
                     }
                 }
 
-                return true;
+                return ((m_min <= cnt) && (cnt <= m_max));
             }
 
             virtual Variable* _Move(VariableAllocator& allocator) noexcept override
@@ -383,25 +437,24 @@ namespace DDL_LEXER
 
 
         // 内建标识符
-        class BuiltinIdent : public Variable
+        class BuiltinIdent : public SyntaxToken
         { // [_a-zA-Z][_a-zA-Z0-9]*
         public:
-            explicit BuiltinIdent(StrRef name)
-                : m_tokenName(name)
-            {}
+            using SyntaxToken::SyntaxToken;
 
         private:
-            bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
+            bool ScanImpl(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
             {
                 // [_a-z-A-Z][_0-9a-zA-Z]*
                 // 最小要求是一个字符
-                if (offset >= script.len)
+                std::size_t curOffset = offset;
+                if (curOffset >= script.len)
                 {
-                    err = m_tokenName.ToStdString() + ": atleast one bytes.....";
+                    err = Name().ToStdString() + ": atleast one bytes.....";
                     return false;
                 }
 
-                const char first = script[offset++];
+                const char first = script[curOffset++];
 
                 if (!(('_' == first) 
                     || (first >= 'a' && first <= 'z')
@@ -410,24 +463,23 @@ namespace DDL_LEXER
                     return false;
                 }
 
-                for (; offset < script.len; ++offset)
+                for (; curOffset < script.len; ++curOffset)
                 {
-                    const char ch = script[offset];
+                    const char ch = script[curOffset];
                     if (!('_' == ch
                         || (ch >= 'a' && ch <= 'z')
                         || (ch >= 'A' && ch <= 'Z')
                         || (ch >= '0' && ch <= '9')))
                     {
-                        err = m_tokenName.ToStdString() + ": Error";
-                        return false;
+                        //err = Name().ToStdString() + ": Error";
+                        //return false;
+                        break;
                     }
                 }
 
+                offset = curOffset;
                 return true;
             }
-
-        private:
-            StrRef m_tokenName;
         }; // class BuiltinIdent
 
 
@@ -454,6 +506,7 @@ namespace DDL_LEXER
                     case '\x0c': // \f
                     case '\x0d': // \r
                     case '\x20': // ' '
+                        ++offset;
                         return true;
                     }
                 }
@@ -473,25 +526,28 @@ namespace DDL_LEXER
         { // [1-9][0-9]*|0
             bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
             { // 十进制自然数
-                if (offset < script.len)
+                std::size_t curOffset = offset;
+
+                if (curOffset < script.len)
                 {
-                    if (IsZero(script[offset])) { ++offset; return true; }
+                    if (IsZero(script[curOffset])) { ++curOffset; return true; }
 
-                    if (Is1To9(script[offset]))
+                    if (Is1To9(script[curOffset]))
                     {
-                        ++offset;
+                        ++curOffset;
 
-                        while (offset < script.len)
+                        while (curOffset < script.len)
                         {
-                            if (Is0To9(script[offset]))
+                            if (Is0To9(script[curOffset]))
                             {
-                                ++offset;
+                                ++curOffset;
                             }
                             else
                             {
                                 break;
                             }
                         }
+                        offset = curOffset;
                         return true;
                     }
                 }
@@ -504,22 +560,28 @@ namespace DDL_LEXER
         }; // class BuiltinNaturalNumDec
 
         // 内置终结符的表达方式：单引号或双引号
-        class BuiltinTerminator : public Variable
+        class BuiltinTerminator : public SyntaxToken
         {
+        public:
+            using SyntaxToken::SyntaxToken;
+
             // 1. 单引号不支持转义，2. 双引号支持转义
-            bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
+            bool ScanImpl(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
             {
                 // 1. 单引号： '[^']+
                 // 2. 双引号： 暂不实现
-                if (offset < script.len)
+
+                std::size_t curOffset = offset;
+                if (curOffset < script.len)
                 {
-                    if ('\'' == script[offset])
+                    if ('\'' == script[curOffset])
                     {
-                        ++offset;
-                        while (offset < script.len)
+                        ++curOffset;
+                        while (curOffset < script.len)
                         {
-                            if ('\'' == script[offset++])
+                            if ('\'' == script[curOffset++])
                             {
+                                offset = curOffset;
                                 return true;
                             }
                         }
@@ -622,11 +684,40 @@ namespace DDL_LEXER
         }
 
     private:
-
-        template <class T, class... Args>
-        Variable* Alloc(Args&&...args) noexcept
+        template <class T, class... Args,
+           class = typename std::enable_if<!std::is_base_of<internal::SyntaxToken, T>::value>::type>
+        Variable* Alloc(StrRef name, Args&&...args) noexcept
         {
-            return m_variableAllocator.Alloc<T>(std::forward<Args>(args)...);
+            Variable* ret = m_variableAllocator.Alloc<T>(std::forward<Args>(args)...);
+            if (nullptr != ret)
+            {
+                ret->SetName(name);
+            }
+            return ret;
+        }
+
+        template <class T, 
+            class = typename std::enable_if<std::is_base_of<Variable, T>::value>::type>
+        Variable* Alloc(Variable* var) noexcept
+        {
+            return m_variableAllocator.Alloc<T>(var);
+        }
+
+        template <class T, 
+            class = typename std::enable_if<std::is_base_of<internal::SyntaxToken, T>::value>::type>
+        Variable* Alloc(StrRef name, StrRef token, Variable* whites = nullptr) noexcept
+        {
+            internal::SyntaxToken* ret 
+                = (internal::SyntaxToken*)m_variableAllocator.Alloc<T>(token);
+            if (nullptr != ret)
+            {
+                ret->SetName(name);
+                if (! ret->AddLeftWhites(whites))
+                {
+                    return nullptr;
+                }
+            }
+            return ret;
         }
 
         //template <class T, class Var, class... Args>
@@ -640,84 +731,87 @@ namespace DDL_LEXER
         bool MakeInternal() noexcept
         {
             using namespace internal;
+            Variable* whites = Alloc<SyntaxLoop>("whites", 
+                Alloc<BuiltinWhite>("white"), 0, SyntaxLoop::Max);
+
             // ident      : ; # func  (暂时使用函数)
-            Variable* ident = Alloc<BuiltinIdent>("ident");
+            Variable* ident = Alloc<BuiltinIdent>("ident", "", whites);
             // head       :  ident ;
             Variable* head = Alloc<SyntaxSequence>(ident);
             // var        : ident ;
             Variable* var  = Alloc<SyntaxSequence>(ident);
 
             // terminator    : '.*?'  # 这里暂时只使用单引号的终结符 (内部 CFG 文法中终结符的表示)
-            Variable* terminator = Alloc<BuiltinTerminator>();
+            Variable* terminator = Alloc<BuiltinTerminator>("terminator", "", whites);
 
             // operand 
-            Variable* operand = Alloc<SyntaxBranch>(terminator, var);
+            Variable* operand = Alloc<SyntaxBranch>("operand", terminator, var);
 
             // expr : 优先级 循环 >  分支 > 序列
 
-            Variable* $0x7B = Alloc<SyntaxToken>("{"); // 可复用
-            Variable* $0x7D = Alloc<SyntaxToken>("}"); // 可复用
-            Variable* $0x2C = Alloc<SyntaxToken>(","); // 可复用
+            Variable* $0x7B = Alloc<SyntaxToken>("{", "{", whites); // 可复用
+            Variable* $0x7D = Alloc<SyntaxToken>("}", "}", whites); // 可复用
+            Variable* $0x2C = Alloc<SyntaxToken>(",", ",", whites); // 可复用
 
             // decl expr;
-            Variable* expr = Alloc<MutableVariable>(); // mut_var
+            Variable* expr = Alloc<MutableVariable>("expr"); // mut_var
 
             // struct_with_bracket : '(' expr ')' ;
-            Variable* struct_with_bracket = Alloc<SyntaxSequence>(
-                Alloc<SyntaxToken>("("), expr, Alloc<SyntaxToken>(")"));
+            Variable* struct_with_bracket = Alloc<SyntaxSequence>("struct_with_bracket",
+                Alloc<SyntaxToken>("(", "(", whites), expr, Alloc<SyntaxToken>(")", ")", whites));
 
             // struct_expr : operand | struct_with_bracket # 这里 仅能容纳 var ??? 那正则表达式怎么办 ？？？TODO,  可以使用变量！！！！
-            Variable* struct_expr = Alloc<SyntaxBranch>(operand, struct_with_bracket);
+            Variable* struct_expr = Alloc<SyntaxBranch>("struct_expr", operand, struct_with_bracket);
 
             // num_dec regex : [1-9][0-9]*|0 ;
-            Variable* num_dec = Alloc<BuiltinNaturalNumDec>();
+            Variable* num_dec = Alloc<BuiltinNaturalNumDec>("num_dec");
 
-            Variable* loop_n = Alloc<SyntaxSequence>($0x7B, num_dec, $0x7D);
+            Variable* loop_n = Alloc<SyntaxSequence>("loop_n", $0x7B, num_dec, $0x7D);
             // loop_m_n   : '{' num_dec ',' num_dec '}';
-            Variable* loop_m_n = Alloc<SyntaxSequence>($0x7B, num_dec, $0x2C, num_dec, $0x7D);
+            Variable* loop_m_n = Alloc<SyntaxSequence>("loop_m_n", $0x7B, num_dec, $0x2C, num_dec, $0x7D);
             // loop_m_max : '{' num_dec ',' '}';
-            Variable* loop_m_max = Alloc<SyntaxSequence>($0x7B, num_dec, $0x2C, $0x7D);
+            Variable* loop_m_max = Alloc<SyntaxSequence>("loop_m_max", $0x7B, num_dec, $0x2C, $0x7D);
 
             // loop_symbol     : '?' | '*' | "+" | loop_n | loop_m_n | loop_m_max ;
-            Variable* loop_symbol = Alloc<SyntaxBranch>(
-                Alloc<SyntaxToken>("?"), Alloc<SyntaxToken>("*"), Alloc<SyntaxToken>("+"),
+            Variable* loop_symbol = Alloc<SyntaxBranch>("loop_symbol",
+                Alloc<SyntaxToken>("?", "?"), Alloc<SyntaxToken>("*", "*"), Alloc<SyntaxToken>("+", "+"),
                 loop_n, loop_m_n, loop_m_max);
             // loop_symbol_opt : loop_symbol ?
-            Variable* loop_symbol_opt = Alloc<SyntaxLoop>(loop_symbol, 0, 1u);
+            Variable* loop_symbol_opt = Alloc<SyntaxLoop>("loop_symbol_opt", loop_symbol, 0, 1u);
             // loop_expr : struct_expr loop_symbol_opt;
-            Variable* loop_expr = Alloc<SyntaxSequence>(struct_expr, loop_symbol_opt);
+            Variable* loop_expr = Alloc<SyntaxSequence>("loop_expr", struct_expr, loop_symbol_opt);
 
             // seq_expr : loop_expr +
-            Variable* seq_expr = Alloc<SyntaxLoop>(loop_expr, 1u, SyntaxLoop::Max);
+            Variable* seq_expr = Alloc<SyntaxLoop>("seq_expr", loop_expr, 1u, SyntaxLoop::Max);
 
             // branch_expr : '|' seq_expr;
-            Variable* branch_expr = Alloc<SyntaxSequence>(Alloc<SyntaxToken>("|"), seq_expr);
+            Variable* branch_expr = Alloc<SyntaxSequence>("branch_expr", Alloc<SyntaxToken>("|", "|", whites), seq_expr);
             // seq_expr_some : branch_expr *;
-            Variable* branch_expr_some = Alloc<SyntaxLoop>(branch_expr, 0, SyntaxLoop::Max);
-            // branch_pairs   : seq_expr seq_expr_some
-            Variable* branch_pairs = Alloc<SyntaxSequence>(seq_expr, branch_expr);
+            Variable* branch_expr_some = Alloc<SyntaxLoop>("branch_expr_some", branch_expr, 0, SyntaxLoop::Max);
+            // branch_pairs   : branch_expr branch_expr_some
+            Variable* branch_pairs = Alloc<SyntaxSequence>("branch_pairs", seq_expr, branch_expr_some);
 
             // expr      ： branch_expr;
             assert(expr->IsMutable());
             expr->SwapMut(branch_pairs);
 
             // defaultBody: ':' expr;
-            Variable* defaultBody = Alloc<SyntaxSequence>(Alloc<SyntaxToken>(":"), expr);
+            Variable* defaultBody = Alloc<SyntaxSequence>("defaultBody", Alloc<SyntaxToken>(":", ":", whites), expr);
             
             // attr      : ; # func  # func: 'regex' | 其他自定义白字符策略变量
-            Variable* attr = Alloc<internal::BuiltinAttr>();
+            Variable* attr = Alloc<BuiltinAttr>("attr");
 
             // attrBody:    attr defaultBody;
-            Variable* attrBody  = Alloc<SyntaxSequence>(attr, defaultBody);
+            Variable* attrBody  = Alloc<SyntaxSequence>("attrBody", attr, defaultBody);
 
             // body: defaultBody | attrBody;
-            Variable* body  = Alloc<SyntaxBranch>(defaultBody, attrBody);
+            Variable* body  = Alloc<SyntaxBranch>("body", defaultBody, attrBody);
 
             // production :  head body ';' ; 
-            Variable* production = Alloc<SyntaxSequence>(head, body, Alloc<SyntaxToken>(";"));
+            Variable* production = Alloc<SyntaxSequence>("production", head, body, Alloc<SyntaxToken>(";", ";", whites), whites);
 
             // root:         production + ;
-            m_internalRoot = Alloc<SyntaxLoop>(production, 1u, SyntaxLoop::Max);
+            m_internalRoot = Alloc<SyntaxLoop>("root", production, 1u, SyntaxLoop::Max);
             return true;
         }
 
