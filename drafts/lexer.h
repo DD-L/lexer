@@ -61,12 +61,6 @@ namespace DDL_LEXER
         }
     }; //  StrRef
 
-    //struct ScanContext
-    //{
-    //    //const StrRef& script; // 脚本
-    //    StrRef    script; // 脚本
-    //    StrRef    var;    // 当前变量   
-    //};
 
     class VariableAllocator;
 
@@ -155,15 +149,6 @@ namespace DDL_LEXER
                 return var;
             }
         };
-
-        //struct _AllocForwardFirstArg
-        //{
-        //    template <class Vars>
-        //    Variable* operator()(Vars&, Variable* var) const noexcept
-        //    {
-        //        return var;
-        //    }
-        //};
     } // namespace traits
 
     // 变量内存分配器，同时承担内存持有的职责
@@ -476,6 +461,14 @@ namespace DDL_LEXER
             }
         }; // class BuiltinWhite
 
+        //class BuildinWhites : public SyntaxLoop
+        //{ // // 包含所有的空白字符 和 注释
+        //public:
+        //    BuildinWhites()
+        //    {
+        //    }
+        //}; // class BuildinWhites
+
         class BuiltinNaturalNumDec : public Variable
         { // [1-9][0-9]*|0
             bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
@@ -536,18 +529,6 @@ namespace DDL_LEXER
             }
         };
     } // namespace internal
-
-    //namespace traits
-    //{
-    //    template <>
-    //    struct AllocHelper<DDL_LEXER::internal::SyntaxSequence, 1u> : _AllocForwardFirstArg {};
-    //
-    //    template <>
-    //    struct AllocHelper<DDL_LEXER::internal::SyntaxBranch, 1u> : _AllocForwardFirstArg {};
-    //
-    //    template <>
-    //    struct AllocHelper<DDL_LEXER::internal::SyntaxLoop, 1u> : _AllocForwardFirstArg {};
-    //} // namespace traits
 
     class Lexer
     {
@@ -706,19 +687,19 @@ namespace DDL_LEXER
             // loop_expr : struct_expr loop_symbol_opt;
             Variable* loop_expr = Alloc<SyntaxSequence>(struct_expr, loop_symbol_opt);
 
-            // branch_expr      : '|' loop_expr  ;
-            Variable* branch_expr = Alloc<SyntaxSequence>(Alloc<SyntaxToken>("|"), loop_expr);
-            // branch_expr_some : branch_expr * ;
+            // seq_expr : loop_expr +
+            Variable* seq_expr = Alloc<SyntaxLoop>(loop_expr, 1u, SyntaxLoop::Max);
+
+            // branch_expr : '|' seq_expr;
+            Variable* branch_expr = Alloc<SyntaxSequence>(Alloc<SyntaxToken>("|"), seq_expr);
+            // seq_expr_some : branch_expr *;
             Variable* branch_expr_some = Alloc<SyntaxLoop>(branch_expr, 0, SyntaxLoop::Max);
-            // branch_pairs : loop_expr branch_expr_some ;
-            Variable* branch_pairs = Alloc<SyntaxSequence>(loop_expr, branch_expr_some);
+            // branch_pairs   : seq_expr seq_expr_some
+            Variable* branch_pairs = Alloc<SyntaxSequence>(seq_expr, branch_expr);
 
-            // seq_expr  : branch_pairs + ;
-            Variable* seq_expr = Alloc<SyntaxLoop>(branch_pairs, 1u, SyntaxLoop::Max);
-
-            // expr      : seq_expr ; 
+            // expr      ： branch_expr;
             assert(expr->IsMutable());
-            expr->SwapMut(seq_expr);
+            expr->SwapMut(branch_pairs);
 
             // defaultBody: ':' expr;
             Variable* defaultBody = Alloc<SyntaxSequence>(Alloc<SyntaxToken>(":"), expr);
@@ -742,6 +723,7 @@ namespace DDL_LEXER
 
     private:
         Variable*                                  m_internalRoot;
+        Variable*                                  m_builtinWhites;  // 内置白字符
         VariableAllocator                          m_variableAllocator;
         std::unordered_map<std::string, Variable*> m_userVariablesMap;
     }; // class Lexer
@@ -787,10 +769,4 @@ branch :  seq  branch_vec    ;
         }
     }
 
-
-    //template <class Syntax, class... Args>
-    //Variable* VariableAllocator::Alloc(Args&&... args) noexcept
-    //{
-    //    return traits::AllocHelper<Syntax>::Alloc(m_vars, std::forward<Args>(args)...);
-    //}
 } // namespace DDL_LEXER
