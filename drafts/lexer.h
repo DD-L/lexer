@@ -787,8 +787,7 @@ namespace DDL_LEXER
             // operand 
             Variable* operand = Alloc<SyntaxBranch>("operand", terminator, var);
 
-            // expr : 优先级 循环 >  分支 > 序列
-
+            // expr : 优先级 循环 > 序列 > 分支
             Variable* $0x7B = Alloc<SyntaxToken>("{", "{", whites); // 可复用
             Variable* $0x7D = Alloc<SyntaxToken>("}", "}", whites); // 可复用
             Variable* $0x2C = Alloc<SyntaxToken>(",", ",", whites); // 可复用
@@ -839,24 +838,50 @@ namespace DDL_LEXER
             expr->SwapMut(branch_pairs);
 
             // defaultBody: ':' expr;
-            Variable* defaultBody = Alloc<SyntaxSequence>("defaultBody", Alloc<SyntaxToken>(":", ":", whites), expr);
+            Variable* default_body = Alloc<SyntaxSequence>("default_body", Alloc<SyntaxToken>(":", ":", whites), expr);
             
             // attr      : ; # func  # func: 'regex' | 其他自定义白字符策略变量
             Variable* attr = Alloc<BuiltinAttr>("attr");
 
             // attrBody:    attr defaultBody;
-            Variable* attrBody  = Alloc<SyntaxSequence>("attrBody", attr, defaultBody);
+            Variable* attr_body  = Alloc<SyntaxSequence>("attr_body", attr, default_body);
 
             // body: defaultBody | attrBody;
-            Variable* body  = Alloc<SyntaxBranch>("body", defaultBody, attrBody);
+            Variable* body  = Alloc<SyntaxBranch>("body", default_body, attr_body);
 
-            // production :  head body ';' ; 
-            Variable* production = Alloc<SyntaxSequence>("production", head, body, 
-                Alloc<SyntaxLoop>("statementTerminator", Alloc<SyntaxToken>(";", ";", whites), 1u, SyntaxLoop::Max), 
-                whites);
+            // productionStatement :  head body ';' ; 
+            Variable* production_statement = Alloc<SyntaxSequence>("production_statement", head, body);
 
-            // root:         production + ;
-            m_internalRoot = Alloc<SyntaxLoop>("root", production, 1u, SyntaxLoop::Max);
+            // semicolon_opt : ','?;
+            Variable* semicolon_opt = Alloc<SyntaxLoop>("semicolon_opt", Alloc<SyntaxToken>(",", ",", whites), 0u, 1u);
+
+            // let_var_clause : 'let' head '=' var semicolon_opt ;
+            Variable* let_var_clause = Alloc<SyntaxSequence>("let_var_clause", Alloc<SyntaxToken>("let", "let", whites), head,
+                Alloc<SyntaxToken>("=", "=", whites), var, semicolon_opt);
+
+            // operand_swap : operand '->' operand;
+            Variable* operand_swap = Alloc<SyntaxSequence>("operand_swap", operand, Alloc<SyntaxToken>("->", "->", whites), operand);
+            // operand_swap_some:  (semicolon_opt operand_swap)*;
+            Variable* operand_swap_some = Alloc<SyntaxLoop>("operand_swap_some",
+                Alloc<SyntaxSequence>("another_operand_swap", semicolon_opt, operand_swap),
+                0, SyntaxLoop::Max);
+            // operand_swap_statement : operand_swap operand_swap_some;
+            Variable* operand_swap_statement = Alloc<SyntaxSequence>("operand_swap_statement", operand_swap, operand_swap_some);
+            // where_clause : 'where'  operand_swap_statement;
+            Variable* where_clause = Alloc<SyntaxSequence>("where_clause", Alloc<SyntaxToken>("where", "where", whites), operand_swap_statement);
+
+            // letStatement : 'let' head '=' var ','? 'where' operand '->' operand (','? operand '->' operand)*
+            Variable* let_statement = Alloc<SyntaxSequence>("let_statement", let_var_clause, where_clause);
+
+            // statement : production_statement | let_statement ;
+            Variable* statement = Alloc<SyntaxBranch>("statement", production_statement, let_statement);
+
+            // statement_with_endmark : statement ';'+;
+            Variable* statement_with_endmark = Alloc<SyntaxSequence>("statement_with_endmark", statement, 
+                Alloc<SyntaxLoop>("statement_endmark", Alloc<SyntaxToken>(";", ";", whites), 1u, SyntaxLoop::Max), whites);
+
+            // root:         statement_with_endmark + ;
+            m_internalRoot = Alloc<SyntaxLoop>("root", statement_with_endmark, 1u, SyntaxLoop::Max);
             return true;
         }
 
