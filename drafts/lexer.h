@@ -257,17 +257,14 @@ namespace DDL_LEXER
 
             virtual bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept
             {
-                if ((offset + m_token.len) > script.len)
-                {
-                    return false;
-                }
-
                 std::size_t oldOffset = offset;
                 if (m_leftWhites)
                 {
                     std::string e;
                     m_leftWhites->Scan(script, offset, e); (void)e;
                 }
+
+
 
                 if (ScanImpl(script, offset, err))
                 {
@@ -279,11 +276,15 @@ namespace DDL_LEXER
         
             virtual bool ScanImpl(const StrRef& script, std::size_t& offset, std::string& err) noexcept
             {
-                if (0 == std::memcmp(script + offset, m_token.str, m_token.len))
+                if ((offset + m_token.len) <= script.len)
                 {
-                    offset += m_token.len;
-                    return true;
+                    if (0 == std::memcmp(script + offset, m_token.str, m_token.len))
+                    {
+                        offset += m_token.len;
+                        return true;
+                    }
                 }
+
                 return false;
             }
 
@@ -428,12 +429,6 @@ namespace DDL_LEXER
                 }
 
                 return ((m_min <= cnt) && (cnt <= m_max));
-                //if ((m_min <= cnt) && (cnt <= m_max))
-                //{
-                //    return true;
-                //}
-                //offset = oldOffset;
-                //return false;
             }
 
             virtual Variable* _Move(VariableAllocator& allocator) noexcept override
@@ -856,7 +851,9 @@ namespace DDL_LEXER
             Variable* body  = Alloc<SyntaxBranch>("body", defaultBody, attrBody);
 
             // production :  head body ';' ; 
-            Variable* production = Alloc<SyntaxSequence>("production", head, body, Alloc<SyntaxToken>(";", ";", whites), whites);
+            Variable* production = Alloc<SyntaxSequence>("production", head, body, 
+                Alloc<SyntaxLoop>("statementTerminator", Alloc<SyntaxToken>(";", ";", whites), 1u, SyntaxLoop::Max), 
+                whites);
 
             // root:         production + ;
             m_internalRoot = Alloc<SyntaxLoop>("root", production, 1u, SyntaxLoop::Max);
