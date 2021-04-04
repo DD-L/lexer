@@ -539,12 +539,14 @@ namespace DDL_LEXER
         //    }
         //}; // class BuildinWhites
 
-        class BuiltinNaturalNumDec : public Variable
+        class BuiltinNaturalNumDec : public SyntaxToken
         { // [1-9][0-9]*|0
-            bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
+        public:
+            using SyntaxToken::SyntaxToken;
+
+            bool ScanImpl(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
             { // 十进制自然数
                 std::size_t curOffset = offset;
-
                 if (curOffset < script.len)
                 {
                     if (IsZero(script[curOffset])) 
@@ -786,14 +788,14 @@ namespace DDL_LEXER
             Variable* struct_expr = Alloc<SyntaxBranch>("struct_expr", operand, struct_with_bracket);
 
             // num_dec regex : [1-9][0-9]*|0 ;
-            Variable* num_dec = Alloc<BuiltinNaturalNumDec>("num_dec");
+            Variable* num_dec = Alloc<BuiltinNaturalNumDec>("num_dec", "", whites);
 
-            Variable* loop_n = Alloc<SyntaxSequence>("loop_n", $0x7B, whites, num_dec, $0x7D);
+            Variable* loop_n = Alloc<SyntaxSequence>("loop_n", $0x7B, num_dec, $0x7D);
             // loop_m_n   : '{' num_dec ',' num_dec '}';
             Variable* loop_m_n = Alloc<SyntaxSequence>("loop_m_n", 
-                $0x7B, whites, num_dec, $0x2C, whites, num_dec, $0x7D);
+                $0x7B, num_dec, $0x2C, num_dec, $0x7D);
             // loop_m_max : '{' num_dec ',' '}';
-            Variable* loop_m_max = Alloc<SyntaxSequence>("loop_m_max", $0x7B, whites, num_dec, $0x2C, $0x7D);
+            Variable* loop_m_max = Alloc<SyntaxSequence>("loop_m_max", $0x7B, num_dec, $0x2C, $0x7D);
 
             // loop_symbol     : '?' | '*' | "+" | loop_n | loop_m_n | loop_m_max ;
             Variable* loop_symbol = Alloc<SyntaxBranch>("loop_symbol",
