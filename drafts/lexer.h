@@ -228,7 +228,7 @@ namespace DDL_LEXER
             }
         }; // class MutableVariable
 
-        // 终止符
+        // 终止符, 支持空串
         class SyntaxToken : public Variable
         {
             typedef SyntaxToken _Myt;
@@ -295,8 +295,7 @@ namespace DDL_LEXER
             }
         private:
             StrRef    m_token;
-            Variable* m_leftWhites  = nullptr;
-            //Variable* m_rightWhites = nullptr;
+            Variable* m_leftWhites   = nullptr;
         }; // class SyntaxToken
 
         // Basic Structures (syntax/sentence structure)
@@ -531,13 +530,32 @@ namespace DDL_LEXER
             }
         }; // class BuiltinWhite
 
-        //class BuildinWhites : public SyntaxLoop
-        //{ // // 包含所有的空白字符 和 注释
-        //public:
-        //    BuildinWhites()
-        //    {
-        //    }
-        //}; // class BuildinWhites
+        class BuildinComment : public Variable
+        { // 注释, 目前仅支持 #.*?(\n|$)
+        public:
+            bool Scan(const StrRef& script, std::size_t& offset, std::string&) noexcept override
+            {
+                if (offset < script.len)
+                {
+                    if ('#' == script[offset])
+                    {
+                        ++offset;
+                        while (offset < script.len)
+                        {
+                            if ('\n' == script[offset])
+                            {
+                                ++offset;
+                                return true;
+                            }
+                            ++offset;
+                        }
+
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }; // class BuildinComment
 
         class BuiltinNaturalNumDec : public SyntaxToken
         { // [1-9][0-9]*|0
@@ -755,8 +773,11 @@ namespace DDL_LEXER
         bool MakeInternal() noexcept
         {
             using namespace internal;
+
+            Variable* white = Alloc<BuiltinWhite>("white");
+            Variable* comment = Alloc<BuildinComment>("comment");
             Variable* whites = Alloc<SyntaxLoop>("whites", 
-                Alloc<BuiltinWhite>("white"), 0, SyntaxLoop::Max);
+                Alloc<SyntaxBranch>("white_or_comment", white, comment), 0, SyntaxLoop::Max);
 
             // ident      : ; # func  (暂时使用函数)
             Variable* ident = Alloc<BuiltinIdent>("ident", "", whites);
