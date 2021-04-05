@@ -240,7 +240,7 @@ namespace DDL_LEXER
                 : m_token(token)
             {}
 
-            [[nodiscard]] bool AddLeftWhites(Variable* whites) noexcept
+            [[nodiscard]] bool SetLeftWhites(Variable* whites) noexcept
             { // 要求：当前 Token 被当前设定的白字符从左到右 Scan，不能出现被消耗字符的情况
                 std::size_t offset = 0;
                 if (whites)
@@ -255,6 +255,12 @@ namespace DDL_LEXER
                 return (0 == offset);
             }
 
+            bool SetRightAssert(Variable* _Assert) noexcept
+            {
+                m_rightAssert = _Assert;
+                return true;
+            }
+
             virtual bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept
             {
                 std::size_t oldOffset = offset;
@@ -264,11 +270,19 @@ namespace DDL_LEXER
                     m_leftWhites->Scan(script, offset, e); (void)e;
                 }
 
-
-
                 if (ScanImpl(script, offset, err))
                 {
-                    return true;
+                    if (nullptr == m_rightAssert)
+                    {
+                        return true;
+                    }
+                    // 对 Token 右边界的零宽断言
+                    std::size_t constOffset = offset;
+                    std::string e; (void)(constOffset); (void)(e);
+                    if (m_rightAssert->Scan(script, constOffset, e))
+                    {
+                        return true;
+                    }
                 }
                 offset = oldOffset; // 恢复前面白字符的消耗 ？？ @TODO 有必要 ？？？？
                 return false;
@@ -297,6 +311,7 @@ namespace DDL_LEXER
         private:
             StrRef    m_token;
             Variable* m_leftWhites   = nullptr;
+            Variable* m_rightAssert  = nullptr;
         }; // class SyntaxToken
 
         // Basic Structures (syntax/sentence structure)
@@ -493,7 +508,6 @@ namespace DDL_LEXER
             }
         }; // class BuiltinIdent
 
-
         // 属性
         class BuiltinAttr : public Variable
         {
@@ -507,21 +521,25 @@ namespace DDL_LEXER
         {
             bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
             {
-                if (offset < script.len)
+                if (offset < script.len && IsWhite(script[offset]))
                 {
-                    switch (script[offset])
-                    {
-                    case '\x09': // \t 
-                    case '\x0a': // \n
-                    case '\x0b': // \v
-                    case '\x0c': // \f
-                    case '\x0d': // \r
-                    case '\x20': // ' '
-                        ++offset;
-                        return true;
-                    }
+                    ++offset;
+                    return true;
                 }
                 return false;
+            }
+
+        public:
+            static bool IsWhite(char c) noexcept
+            { // \t \n \v \f \r ' '
+                switch (c)
+                {
+                case '\x09': case '\x0a': case '\x0b':
+                case '\x0c': case '\x0d': case '\x20':
+                    return true;
+                default:
+                    return false;
+                }
             }
         }; // class BuiltinWhite
 
@@ -551,6 +569,45 @@ namespace DDL_LEXER
                 return false;
             }
         }; // class BuildinComment
+
+        class BuiltinPunct : public Variable
+        { // ispunct : !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~ 
+            bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
+            {
+                if (offset < script.len)
+                {
+                    return IsPunct(script[offset]);
+                }
+
+                return false;
+            }
+        public:
+            static bool IsPunct(char c) noexcept
+            {
+                return !!std::ispunct((uint8_t)(c));
+            }
+        }; // class BuiltinPunct
+
+        class BuiltinTokenRightZeroWidthAssertion : public Variable
+        { // Token 右边界的零宽断言
+            // $|\s|[\x21–\x2F\x3A–\x40\x5B–\x60\x7B–\x7E]
+            bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
+            {
+                const std::size_t _offset = offset; // 不消耗字符
+                if (_offset == script.len)
+                {
+                    return true;
+                }
+
+                if (_offset < script.len)
+                {
+                    char c = script[_offset];
+                    return BuiltinWhite::IsWhite(c) || BuiltinPunct::IsPunct(c);
+                }
+
+                return false;
+            }
+        };
 
         class BuiltinNaturalNumDec : public SyntaxToken
         { // [1-9][0-9]*|0
@@ -742,17 +799,20 @@ namespace DDL_LEXER
 
         template <class T, 
             class = typename std::enable_if<std::is_base_of<internal::SyntaxToken, T>::value>::type>
-        Variable* Alloc(StrRef name, StrRef token, Variable* whites = nullptr) noexcept
+        Variable* Alloc(StrRef name, StrRef token, 
+            Variable* whites = nullptr, Variable* rightAssert = nullptr) noexcept
         {
             internal::SyntaxToken* ret 
                 = (internal::SyntaxToken*)m_variableAllocator.Alloc<T>(token);
             if (nullptr != ret)
             {
                 ret->SetName(name);
-                if (! ret->AddLeftWhites(whites))
+                if (! ret->SetLeftWhites(whites))
                 {
                     return nullptr;
                 }
+
+                ret->SetRightAssert(rightAssert);
             }
             return ret;
         }
@@ -774,8 +834,10 @@ namespace DDL_LEXER
             Variable* whites = Alloc<SyntaxLoop>("whites", 
                 Alloc<SyntaxBranch>("white_or_comment", white, comment), 0, SyntaxLoop::Max);
 
+            Variable* tokenRightAssert = Alloc<BuiltinTokenRightZeroWidthAssertion>("tokenRightAssert");
+
             // ident      : ; # func  (暂时使用函数)
-            Variable* ident = Alloc<BuiltinIdent>("ident", "", whites);
+            Variable* ident = Alloc<BuiltinIdent>("ident", "", whites); // ident 不需要右边界断言
             // head       :  ident ;
             Variable* head = Alloc<SyntaxSequence>(ident);
             // var        : ident ;
@@ -803,7 +865,7 @@ namespace DDL_LEXER
             Variable* struct_expr = Alloc<SyntaxBranch>("struct_expr", operand, struct_with_bracket);
 
             // num_dec regex : [1-9][0-9]*|0 ;
-            Variable* num_dec = Alloc<BuiltinNaturalNumDec>("num_dec", "", whites);
+            Variable* num_dec = Alloc<BuiltinNaturalNumDec>("num_dec", "", whites, tokenRightAssert);
 
             Variable* loop_n = Alloc<SyntaxSequence>("loop_n", $0x7B, num_dec, $0x7D);
             // loop_m_n   : '{' num_dec ',' num_dec '}';
@@ -856,7 +918,8 @@ namespace DDL_LEXER
             Variable* semicolon_opt = Alloc<SyntaxLoop>("semicolon_opt", Alloc<SyntaxToken>(",", ",", whites), 0u, 1u);
 
             // let_var_clause : 'let' head '=' var semicolon_opt ;
-            Variable* let_var_clause = Alloc<SyntaxSequence>("let_var_clause", Alloc<SyntaxToken>("let", "let", whites), head,
+            Variable* let_var_clause = Alloc<SyntaxSequence>("let_var_clause", 
+                Alloc<SyntaxToken>("let", "let", whites, tokenRightAssert), head,
                 Alloc<SyntaxToken>("=", "=", whites), var, semicolon_opt);
 
             // operand_swap : operand '->' operand;
@@ -868,7 +931,8 @@ namespace DDL_LEXER
             // operand_swap_statement : operand_swap operand_swap_some;
             Variable* operand_swap_statement = Alloc<SyntaxSequence>("operand_swap_statement", operand_swap, operand_swap_some);
             // where_clause : 'where'  operand_swap_statement;
-            Variable* where_clause = Alloc<SyntaxSequence>("where_clause", Alloc<SyntaxToken>("where", "where", whites), operand_swap_statement);
+            Variable* where_clause = Alloc<SyntaxSequence>("where_clause", 
+                Alloc<SyntaxToken>("where", "where", whites, tokenRightAssert), operand_swap_statement);
 
             // letStatement : 'let' head '=' var ','? 'where' operand '->' operand (','? operand '->' operand)*
             Variable* let_statement = Alloc<SyntaxSequence>("let_statement", let_var_clause, where_clause);
