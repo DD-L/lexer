@@ -653,18 +653,18 @@ namespace DDL_LEXER
             bool Is0To9(char c) const { return IsZero(c) || Is1To9(c); }
         }; // class BuiltinNaturalNumDec
 
-        // 内置终结符的表达方式：单引号或双引号
+        // 内置终结符的表达方式：单引号，双引号和//串
         class BuiltinTerminator : public SyntaxToken
         {
         public:
             using SyntaxToken::SyntaxToken;
 
-            // 1. 单引号不支持转义，2. 双引号支持转义
+            // 1. 单引号不支持转义，2. 双引号支持转义 3. 支持正则表达式
             bool ScanImpl(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
             {
-                // 1. 单引号： '[^']+
-                // 2. 双引号： 暂不实现
-
+                // 1. 单引号：      '[^']+
+                // 2. 双引号：      暂不实现
+                // 3. 正则表达式：  /.../ 支持空串
                 std::size_t curOffset = offset;
                 if (curOffset < script.len)
                 {
@@ -680,10 +680,32 @@ namespace DDL_LEXER
                             }
                         }
                     }
+                    else if ('/' == script[curOffset])
+                    { // 正则表达式， 不能出现不打印字符
+                        ++curOffset;
+                        while (curOffset < script.len)
+                        {
+                            if (! std::isprint((uint8_t)(script[curOffset])))
+                            {
+                                err = "Unprintable characters cannot appear in regex"; // offset 也要带出去
+                                return false;
+                            }
+                            
+                            if ('\\' == script[curOffset])
+                            { // 转义符跳过
+                                ++curOffset;
+                            }
+                            if ('/' == script[curOffset++])
+                            {
+                                offset = curOffset;
+                                return true;
+                            }
+                        } // end while (curOffset < script.len)
+                    } // end if '/'
                 }
                 return false;
             }
-        };
+        }; // class BuiltinTerminator
     } // namespace internal
 
     class Lexer
@@ -833,7 +855,6 @@ namespace DDL_LEXER
             Variable* comment = Alloc<BuildinComment>("comment");
             Variable* whites = Alloc<SyntaxLoop>("whites", 
                 Alloc<SyntaxBranch>("white_or_comment", white, comment), 0, SyntaxLoop::Max);
-
             Variable* tokenRightAssert = Alloc<BuiltinTokenRightZeroWidthAssertion>("tokenRightAssert");
 
             // ident      : ; # func  (暂时使用函数)
@@ -843,7 +864,7 @@ namespace DDL_LEXER
             // var        : ident ;
             Variable* var  = Alloc<SyntaxSequence>(ident);
 
-            // terminator    : '.*?'  # 这里暂时只使用单引号的终结符 (内部 CFG 文法中终结符的表示)
+            // terminator    : '.*?'  # 或者正则表达式 
             Variable* terminator = Alloc<BuiltinTerminator>("terminator", "", whites);
 
             // operand 
@@ -951,7 +972,7 @@ namespace DDL_LEXER
 
     private:
         Variable*                                  m_internalRoot;
-        Variable*                                  m_builtinWhites;  // 内置白字符
+        //Variable*                                  m_builtinWhites;  // 内置白字符
         VariableAllocator                          m_variableAllocator;
         std::unordered_map<std::string, Variable*> m_userVariablesMap;
     }; // class Lexer
