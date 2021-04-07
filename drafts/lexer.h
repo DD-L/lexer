@@ -371,21 +371,21 @@ namespace DDL_LEXER
         public:
             template <class... Args>
             explicit SyntaxBranch(Args&&... args)
-                : m_branchs({ std::forward<Args>(args) ... })
+                : m_branches({ std::forward<Args>(args) ... })
             {}
 
             explicit SyntaxBranch(std::vector<Variable*>&& branch)
-                : m_branchs(std::move(branch))
+                : m_branches(std::move(branch))
             {}
 
             void AppendVariable(Variable* var)
             {
-                m_branchs.push_back(var);
+                m_branches.push_back(var);
             }
 
             bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
             {
-                for (Variable* v : m_branchs)
+                for (Variable* v : m_branches)
                 {
                     if (v->Scan(script, offset, err))
                     {
@@ -398,13 +398,13 @@ namespace DDL_LEXER
 
             virtual Variable* _Move(VariableAllocator& allocator) noexcept override
             {
-                Variable* var = allocator.Alloc<SyntaxBranch>(std::move(m_branchs));
+                Variable* var = allocator.Alloc<SyntaxBranch>(std::move(m_branches));
                 this->~SyntaxBranch();
                 return var;
             }
 
         protected:
-            std::vector<Variable*>  m_branchs;
+            std::vector<Variable*>  m_branches;
         }; // class SyntaxBranch
 
         class SyntaxLoop : public Variable
@@ -861,7 +861,7 @@ namespace DDL_LEXER
             Variable* ident = Alloc<BuiltinIdent>("ident", "", whites); // ident 不需要右边界断言
             // head       :  ident ;
             Variable* head = Alloc<SyntaxSequence>(ident);
-            // var        : ident ;
+            // var        :  ident ;
             Variable* var  = Alloc<SyntaxSequence>(ident);
 
             // terminator    : '.*?'  # 或者正则表达式 
@@ -871,16 +871,17 @@ namespace DDL_LEXER
             Variable* operand = Alloc<SyntaxBranch>("operand", terminator, var);
 
             // expr : 优先级 循环 > 序列 > 分支
-            Variable* $0x7B = Alloc<SyntaxToken>("{", "{", whites); // 可复用
-            Variable* $0x7D = Alloc<SyntaxToken>("}", "}", whites); // 可复用
-            Variable* $0x2C = Alloc<SyntaxToken>(",", ",", whites); // 可复用
+            Variable* $0x7B = Alloc<SyntaxToken>("{", "{", whites);
+            Variable* $0x7D = Alloc<SyntaxToken>("}", "}", whites);
+            Variable* $0x2C = Alloc<SyntaxToken>(",", ",", whites);
+            Variable* $0x28 = Alloc<SyntaxToken>("(", "(", whites);
+            Variable* $0x29 = Alloc<SyntaxToken>(")", ")", whites);
 
             // decl expr;
             Variable* expr = Alloc<MutableVariable>("expr"); // mut_var
 
             // struct_with_bracket : '(' expr ')' ;
-            Variable* struct_with_bracket = Alloc<SyntaxSequence>("struct_with_bracket",
-                Alloc<SyntaxToken>("(", "(", whites), expr, Alloc<SyntaxToken>(")", ")", whites));
+            Variable* struct_with_bracket = Alloc<SyntaxSequence>("struct_with_bracket", $0x28, expr, $0x29);
 
             // struct_expr : operand | struct_with_bracket # 这里 仅能容纳 var ??? 那正则表达式怎么办 ？？？TODO,  可以使用变量！！！！
             Variable* struct_expr = Alloc<SyntaxBranch>("struct_expr", operand, struct_with_bracket);
@@ -926,14 +927,6 @@ namespace DDL_LEXER
             // defaultBody: ':' expr;
             Variable* default_body = Alloc<SyntaxSequence>("default_body", colon, expr);
             
-            //// attr      : ; # func  # func: 'regex' | 其他自定义白字符策略变量
-            ////Variable* attr = Alloc<BuiltinAttr>("attr");
-            //
-            //// attrBody:    attr defaultBody;
-            ////Variable* attr_body  = Alloc<SyntaxSequence>("attr_body", attr, default_body);
-            //
-            //// body: defaultBody | attrBody;
-            ////Variable* body  = Alloc<SyntaxBranch>("body", default_body, attr_body);
 
             // body : default_body
             Variable* body = default_body;
@@ -942,12 +935,19 @@ namespace DDL_LEXER
             Variable* production_statement = Alloc<SyntaxSequence>("production_statement", head, body);
 
             // semicolon_opt : ','?;
-            Variable* semicolon_opt = Alloc<SyntaxLoop>("semicolon_opt", Alloc<SyntaxToken>(",", ",", whites), 0u, 1u);
+            Variable* semicolon_opt = Alloc<SyntaxLoop>("semicolon_opt", $0x2C, 0u, 1u);
+
+            //// let_var_common :  'let' head '=' var ;
+            //Variable* let_var_common = Alloc<SyntaxSequence>("let_var_common", 
+            //    Alloc<SyntaxToken>("let", "let", whites, tokenRightAssert), head,
+            //    Alloc<SyntaxToken>("=", "=", whites), var);
+
+            Variable* let_keyword = Alloc<SyntaxToken>("let_keyword", "let", whites, tokenRightAssert);
+            Variable* equal_mark  = Alloc<SyntaxToken>("=", "=", whites);
 
             // let_var_clause : 'let' head '=' var semicolon_opt ;
-            Variable* let_var_clause = Alloc<SyntaxSequence>("let_var_clause", 
-                Alloc<SyntaxToken>("let", "let", whites, tokenRightAssert), head,
-                Alloc<SyntaxToken>("=", "=", whites), var, semicolon_opt);
+            Variable* let_var_clause = Alloc<SyntaxSequence>("let_var_clause",
+                let_keyword, head, equal_mark, var, semicolon_opt);
 
             // operand_swap : operand '->' operand;
             Variable* operand_swap = Alloc<SyntaxSequence>("operand_swap", operand, Alloc<SyntaxToken>("->", "->", whites), operand);
@@ -961,16 +961,25 @@ namespace DDL_LEXER
             Variable* where_clause = Alloc<SyntaxSequence>("where_clause", 
                 Alloc<SyntaxToken>("where", "where", whites, tokenRightAssert), operand_swap_statement);
 
-            // let var = var2, where a -> b, c -> d; // @TODO 这里是否要求 a 和 c 必须是非终结符或指向终结符的变量？
-            // letStatement : 'let' head '=' var ','? 'where' operand '->' operand (','? operand '->' operand)*
-            Variable* let_statement = Alloc<SyntaxSequence>("let_statement", let_var_clause, where_clause);
+            // let var = var2, where a -> b, c -> d; // @TODO 这里是否要求 a 和 c 必须是非终结符或指向终结符的变量？ !!!!!!!!!!!!!! 后者无歧义？？？
+            // let_where : 'let' head '=' var ','? 'where' operand '->' operand (','? operand '->' operand)*
+            Variable* let_where = Alloc<SyntaxSequence>("let_where", let_var_clause, where_clause);
 
-            // let var = func();
-            // func_expr: 'let' var '=' / func\s * (/ (operand(',' operand)*) ? ')';
+            // let var = $func();
+            // func_expr: 'let' var '=' /$func\s*(/ (operand(',' operand)*) ? ')';
 
+            Variable* local_func_prefix = Alloc<SyntaxToken>("local_func_prefix", "$", whites);
+            Variable* func_name = Alloc<SyntaxSequence>("func_name", local_func_prefix, ident);
+            Variable* suffix_args = Alloc<SyntaxSequence>("suffix_args", $0x2C, operand);
+            Variable* suffix_args_some = Alloc<SyntaxLoop>("suffix_args_some", suffix_args, 0, SyntaxLoop::Max);
+            Variable* func_args = Alloc<SyntaxSequence>("func_args", operand, suffix_args_some);
+            Variable* func_args_opt = Alloc<SyntaxLoop>("func_args_opt", func_args, 0, 1u);
+            Variable* func_expr = Alloc<SyntaxSequence>("func_expr", func_name, $0x28, func_args_opt, $0x29);
+
+            Variable* let_func = Alloc<SyntaxSequence>("let_func", let_keyword, head, equal_mark, func_expr);
 
             // statement : production_statement | let_statement ;
-            Variable* statement = Alloc<SyntaxBranch>("statement", production_statement, let_statement);
+            Variable* statement = Alloc<SyntaxBranch>("statement", production_statement, let_func, let_where);
 
             // statement_with_endmark : statement ';'+;
             Variable* statement_with_endmark = Alloc<SyntaxSequence>("statement_with_endmark", statement, 
