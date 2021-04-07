@@ -508,14 +508,14 @@ namespace DDL_LEXER
             }
         }; // class BuiltinIdent
 
-        // 属性
-        class BuiltinAttr : public Variable
-        {
-            bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
-            {
-                return true;
-            }
-        };
+        //// 属性
+        //class BuiltinAttr : public Variable
+        //{
+        //    bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
+        //    {
+        //        return true;
+        //    }
+        //};
 
         class BuiltinWhite : public Variable
         {
@@ -920,17 +920,23 @@ namespace DDL_LEXER
             assert(expr->IsMutable());
             expr->SwapMut(branch_pairs);
 
+            // ":"
+            Variable* colon = Alloc<SyntaxToken>(":", ":", whites);
+
             // defaultBody: ':' expr;
-            Variable* default_body = Alloc<SyntaxSequence>("default_body", Alloc<SyntaxToken>(":", ":", whites), expr);
+            Variable* default_body = Alloc<SyntaxSequence>("default_body", colon, expr);
             
-            // attr      : ; # func  # func: 'regex' | 其他自定义白字符策略变量
-            Variable* attr = Alloc<BuiltinAttr>("attr");
+            //// attr      : ; # func  # func: 'regex' | 其他自定义白字符策略变量
+            ////Variable* attr = Alloc<BuiltinAttr>("attr");
+            //
+            //// attrBody:    attr defaultBody;
+            ////Variable* attr_body  = Alloc<SyntaxSequence>("attr_body", attr, default_body);
+            //
+            //// body: defaultBody | attrBody;
+            ////Variable* body  = Alloc<SyntaxBranch>("body", default_body, attr_body);
 
-            // attrBody:    attr defaultBody;
-            Variable* attr_body  = Alloc<SyntaxSequence>("attr_body", attr, default_body);
-
-            // body: defaultBody | attrBody;
-            Variable* body  = Alloc<SyntaxBranch>("body", default_body, attr_body);
+            // body : default_body
+            Variable* body = default_body;
 
             // productionStatement :  head body ';' ; 
             Variable* production_statement = Alloc<SyntaxSequence>("production_statement", head, body);
@@ -955,8 +961,13 @@ namespace DDL_LEXER
             Variable* where_clause = Alloc<SyntaxSequence>("where_clause", 
                 Alloc<SyntaxToken>("where", "where", whites, tokenRightAssert), operand_swap_statement);
 
+            // let var = var2, where a -> b, c -> d; // @TODO 这里是否要求 a 和 c 必须是非终结符或指向终结符的变量？
             // letStatement : 'let' head '=' var ','? 'where' operand '->' operand (','? operand '->' operand)*
             Variable* let_statement = Alloc<SyntaxSequence>("let_statement", let_var_clause, where_clause);
+
+            // let var = func();
+            // func_expr: 'let' var '=' / func\s * (/ (operand(',' operand)*) ? ')';
+
 
             // statement : production_statement | let_statement ;
             Variable* statement = Alloc<SyntaxBranch>("statement", production_statement, let_statement);
