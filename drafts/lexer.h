@@ -924,15 +924,8 @@ namespace DDL_LEXER
             // ":"
             Variable* colon = Alloc<SyntaxToken>(":", ":", whites);
 
-            // defaultBody: ':' expr;
-            Variable* default_body = Alloc<SyntaxSequence>("default_body", colon, expr);
-            
-
-            // body : default_body
-            Variable* body = default_body;
-
             // productionStatement :  head body ';' ; 
-            Variable* production_statement = Alloc<SyntaxSequence>("production_statement", head, body);
+            Variable* production_statement = Alloc<SyntaxSequence>("production_statement", head, colon, expr);
 
             // semicolon_opt : ','?;
             Variable* semicolon_opt = Alloc<SyntaxLoop>("semicolon_opt", $0x2C, 0u, 1u);
