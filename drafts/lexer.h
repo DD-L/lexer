@@ -193,6 +193,48 @@ namespace DDL_LEXER
         std::deque<Variable*>  m_vars;
     }; // class VariableAllocator
 
+
+    //    // class Action
+    //class Action
+    //{
+    //public:
+    //
+    //}; // class Action
+    //
+    //
+    //class ActionAllocator
+    //{
+    //public:
+    //    ~ActionAllocator() noexcept
+    //    {
+    //        Destory();
+    //    }
+    //
+    //    template <class ActionType>
+    //    bool Alloc(const std::vector<Variable*>& vars)
+    //    {
+    //        Action* action = new ActionType();
+    //        m_actios.push_back(action);
+    //        for (Variable* v : vars)
+    //        {
+    //            v->SetAction(action);
+    //        }
+    //    } // Alloc
+    //
+    //private:
+    //    void Destory() noexcept
+    //    {
+    //        for (Action* a : m_actios)
+    //        {
+    //            delete a;
+    //        }
+    //        m_actios.clear();
+    //    }
+    //
+    //private:
+    //    std::deque<Action*> m_actios;
+    //}; // class ActionAllocator
+
     namespace internal
     {
         //
@@ -461,7 +503,6 @@ namespace DDL_LEXER
 
         ///////////////////////////////////////////////////////////////
 
-
         // 内建标识符
         class BuiltinIdent : public SyntaxToken
         { // [_a-zA-Z][_a-zA-Z0-9]*
@@ -507,15 +548,6 @@ namespace DDL_LEXER
                 return true;
             }
         }; // class BuiltinIdent
-
-        //// 属性
-        //class BuiltinAttr : public Variable
-        //{
-        //    bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
-        //    {
-        //        return true;
-        //    }
-        //};
 
         class BuiltinWhite : public Variable
         {
@@ -706,8 +738,19 @@ namespace DDL_LEXER
                 return false;
             }
         }; // class BuiltinTerminator
-    } // namespace internal
+     
+        ////////////////////////////////////
+        //// 内置语法 Action
+        //class BuiltinActionProduction
+        //{
+        //public:
+        //
+        //}; // class BuiltinActionProduction
 
+
+ } // namespace internal
+
+    // class Lexer
     class Lexer
     {
     public:
@@ -743,49 +786,6 @@ namespace DDL_LEXER
         }
 
     private:
-        //static std::size_t LocateToRoot(const StrRef& script, const StrRef& rootStr) noexcept
-        //{
-        //    if (rootStr.len > script.len || 0 == rootStr.len)
-        //    {
-        //        return 0;
-        //    }
-        //
-        //    // .*?;?\s*$root[\s:]
-        //    // State: Accept
-        //    // 0. Start
-        //    // 1. ;?
-        //    // 2. \s*
-        //    // 3. $root
-        //    // 4. [\s:]
-        //    // 5. End
-        //
-        //    SyntaxToken _0x3B(";");
-        //    SyntaxLoop  _0x3BOption(&_0x3B, 0, 1u);
-        //
-        //    internal::BuiltinWhite _white;
-        //    SyntaxLoop _whitesOption(&_white, 0, SyntaxLoop::Max);
-        //     
-        //    SyntaxToken _rootStr(rootStr);
-        //    SyntaxBranch _last(&_white, &_0x3B);
-        //
-        //    SyntaxSequence state(&_0x3BOption, &_whitesOption, &_rootStr, &_last);
-        //
-        //    const std::size_t end = script.len;
-        //    std::size_t offset    = 0;
-        //
-        //    std::string err;
-        //    while (offset < script.len)
-        //    {
-        //        if (state.Scan(script, offset, err))
-        //        {
-        //            assert(offset > 1);
-        //            return (offset - 1u >= rootStr.len) ? (offset - 1u - rootStr.len) : end;
-        //        }
-        //    } 
-        //
-        //    return end;
-        //}
-
         bool ScanScript(const StrRef& script, const VarsTable&, 
             std::size_t offset, std::string& err) const noexcept
         {
@@ -937,17 +937,10 @@ namespace DDL_LEXER
             // semicolon_opt : ','?;
             Variable* semicolon_opt = Alloc<SyntaxLoop>("semicolon_opt", $0x2C, 0u, 1u);
 
-            //// let_var_common :  'let' head '=' var ;
-            //Variable* let_var_common = Alloc<SyntaxSequence>("let_var_common", 
-            //    Alloc<SyntaxToken>("let", "let", whites, tokenRightAssert), head,
-            //    Alloc<SyntaxToken>("=", "=", whites), var);
 
             Variable* let_keyword = Alloc<SyntaxToken>("let_keyword", "let", whites, tokenRightAssert);
             Variable* equal_mark  = Alloc<SyntaxToken>("=", "=", whites);
-
-            // let_var_clause : 'let' head '=' var semicolon_opt ;
-            Variable* let_var_clause = Alloc<SyntaxSequence>("let_var_clause",
-                let_keyword, head, equal_mark, var, semicolon_opt);
+            Variable* where_keyword = Alloc<SyntaxToken>("where", "where", whites, tokenRightAssert);
 
             // operand_swap : operand '->' operand;
             Variable* operand_swap = Alloc<SyntaxSequence>("operand_swap", operand, Alloc<SyntaxToken>("->", "->", whites), operand);
@@ -955,19 +948,16 @@ namespace DDL_LEXER
             Variable* operand_swap_some = Alloc<SyntaxLoop>("operand_swap_some",
                 Alloc<SyntaxSequence>("another_operand_swap", semicolon_opt, operand_swap),
                 0, SyntaxLoop::Max);
-            // operand_swap_statement : operand_swap operand_swap_some;
-            Variable* operand_swap_statement = Alloc<SyntaxSequence>("operand_swap_statement", operand_swap, operand_swap_some);
-            // where_clause : 'where'  operand_swap_statement;
-            Variable* where_clause = Alloc<SyntaxSequence>("where_clause", 
-                Alloc<SyntaxToken>("where", "where", whites, tokenRightAssert), operand_swap_statement);
+
 
             // let var = var2, where a -> b, c -> d; // @TODO 这里是否要求 a 和 c 必须是非终结符或指向终结符的变量？ !!!!!!!!!!!!!! 后者无歧义？？？
             // let_where : 'let' head '=' var ','? 'where' operand '->' operand (','? operand '->' operand)*
-            Variable* let_where = Alloc<SyntaxSequence>("let_where", let_var_clause, where_clause);
+            //Variable* let_where = Alloc<SyntaxSequence>("let_where", let_var_clause, where_clause);
+            Variable* let_where = Alloc<SyntaxSequence>("let_where", let_keyword, head, equal_mark, var, semicolon_opt,
+                where_keyword, operand_swap, operand_swap_some);
 
             // let var = $func();
             // func_expr: 'let' var '=' /$func\s*(/ (operand(',' operand)*) ? ')';
-
             Variable* local_func_prefix = Alloc<SyntaxToken>("local_func_prefix", "$", whites);
             Variable* func_name = Alloc<SyntaxSequence>("func_name", local_func_prefix, ident);
             Variable* suffix_args = Alloc<SyntaxSequence>("suffix_args", $0x2C, operand);
@@ -975,7 +965,6 @@ namespace DDL_LEXER
             Variable* func_args = Alloc<SyntaxSequence>("func_args", operand, suffix_args_some);
             Variable* func_args_opt = Alloc<SyntaxLoop>("func_args_opt", func_args, 0, 1u);
             Variable* func_expr = Alloc<SyntaxSequence>("func_expr", func_name, $0x28, func_args_opt, $0x29);
-
             Variable* let_func = Alloc<SyntaxSequence>("let_func", let_keyword, head, equal_mark, func_expr);
 
             // statement : production_statement | let_statement ;
@@ -987,14 +976,31 @@ namespace DDL_LEXER
 
             // root:         statement_with_endmark + ;
             m_internalRoot = Alloc<SyntaxLoop>("root", statement_with_endmark, 1u, SyntaxLoop::Max);
+
+            ////////////////////////////////////////////////////////////////////////////////////////////
+            //
+            // 变量与 Action 的关系是：
+            // 1. 自定义函数的情况下，变量本身就可以是 Action（函数是Action, 函数的返回值或 this 是变量），而且还可以携带用户自定义数据。
+            // 2. 一个变量最多绑定一个 Action，一个 Action 可以挂在多个变量上
+            
+            //m_actionAllocator.Alloc<BuiltinActionProduction>({ production_statement }) || Error("Faild To Create Action : production_statement");
+            //m_actionAllocator.Alloc<>({ let_func }) || Error("Faild To Create Action : let_func");
+            //m_actionAllocator.Alloc<>({ let_where }) || Error("Faild To Create Action : let_where");
+
+
             return true;
         }
 
+        //static bool Error(StrRef err)
+        //{
+        //    throw(err.ToStdString());
+        //}
+
     private:
         Variable*                                  m_internalRoot;
-        //Variable*                                  m_builtinWhites;  // 内置白字符
         VariableAllocator                          m_variableAllocator;
-        std::unordered_map<std::string, Variable*> m_userVariablesMap;
+        std::unordered_map<std::string, Variable*> m_userVariablesMap;   // 输出(1) 
+        //ActionAllocator                            m_actionAllocator;
     }; // class Lexer
 
 
