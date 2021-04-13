@@ -839,21 +839,13 @@ namespace DDL_LEXER
             return ret;
         }
 
-        //template <class T, class Var, class... Args>
-        //Variable* PlacementAlloc(Var* var, Args&&...args) noexcept
-        //{
-        //    var.~Var();
-        //    return new (var) T(std::forward<Args>(args)...);
-        //}
-
-        // internal: 内置语法
-        bool MakeInternal() noexcept
+        bool MakeInteranlSyntax() noexcept
         {
             using namespace internal;
 
             Variable* white = Alloc<BuiltinWhite>("white");
             Variable* comment = Alloc<BuildinComment>("comment");
-            Variable* whites = Alloc<SyntaxLoop>("whites", 
+            Variable* whites = Alloc<SyntaxLoop>("whites",
                 Alloc<SyntaxBranch>("white_or_comment", white, comment), 0, SyntaxLoop::Max);
             Variable* tokenRightAssert = Alloc<BuiltinTokenRightZeroWidthAssertion>("tokenRightAssert");
 
@@ -862,7 +854,7 @@ namespace DDL_LEXER
             // head       :  ident ;
             Variable* head = Alloc<SyntaxSequence>(ident);
             // var        :  ident ;
-            Variable* var  = Alloc<SyntaxSequence>(ident);
+            Variable* var = Alloc<SyntaxSequence>(ident);
 
             // terminator    : '.*?'  # 或者正则表达式 
             Variable* terminator = Alloc<BuiltinTerminator>("terminator", "", whites);
@@ -891,15 +883,15 @@ namespace DDL_LEXER
 
             Variable* loop_n = Alloc<SyntaxSequence>("loop_n", $0x7B, num_dec, $0x7D);
             // loop_m_n   : '{' num_dec ',' num_dec '}';
-            Variable* loop_m_n = Alloc<SyntaxSequence>("loop_m_n", 
+            Variable* loop_m_n = Alloc<SyntaxSequence>("loop_m_n",
                 $0x7B, num_dec, $0x2C, num_dec, $0x7D);
             // loop_m_max : '{' num_dec ',' '}';
             Variable* loop_m_max = Alloc<SyntaxSequence>("loop_m_max", $0x7B, num_dec, $0x2C, $0x7D);
 
             // loop_symbol     : '?' | '*' | "+" | loop_n | loop_m_n | loop_m_max ;
             Variable* loop_symbol = Alloc<SyntaxBranch>("loop_symbol",
-                Alloc<SyntaxToken>("?", "?", whites), 
-                Alloc<SyntaxToken>("*", "*", whites), 
+                Alloc<SyntaxToken>("?", "?", whites),
+                Alloc<SyntaxToken>("*", "*", whites),
                 Alloc<SyntaxToken>("+", "+", whites),
                 loop_n, loop_m_n, loop_m_max);
             // loop_symbol_opt : loop_symbol ?
@@ -921,18 +913,14 @@ namespace DDL_LEXER
             assert(expr->IsMutable());
             expr->SwapMut(branch_pairs);
 
-            // ":"
-            Variable* colon = Alloc<SyntaxToken>(":", ":", whites);
-
             // productionStatement :  head body ';' ; 
-            Variable* production_statement = Alloc<SyntaxSequence>("production_statement", head, colon, expr);
+            Variable* production_statement = Alloc<SyntaxSequence>("production_statement", head, Alloc<SyntaxToken>(":", ":", whites), expr);
 
             // semicolon_opt : ','?;
             Variable* semicolon_opt = Alloc<SyntaxLoop>("semicolon_opt", $0x2C, 0u, 1u);
 
-
             Variable* let_keyword = Alloc<SyntaxToken>("let_keyword", "let", whites, tokenRightAssert);
-            Variable* equal_mark  = Alloc<SyntaxToken>("=", "=", whites);
+            Variable* equal_mark = Alloc<SyntaxToken>("=", "=", whites);
             Variable* where_keyword = Alloc<SyntaxToken>("where", "where", whites, tokenRightAssert);
 
             // operand_swap : operand '->' operand;
@@ -964,24 +952,34 @@ namespace DDL_LEXER
             Variable* statement = Alloc<SyntaxBranch>("statement", production_statement, let_func, let_where);
 
             // statement_with_endmark : statement ';'+;
-            Variable* statement_with_endmark = Alloc<SyntaxSequence>("statement_with_endmark", statement, 
+            Variable* statement_with_endmark = Alloc<SyntaxSequence>("statement_with_endmark", statement,
                 Alloc<SyntaxLoop>("statement_endmark", Alloc<SyntaxToken>(";", ";", whites), 1u, SyntaxLoop::Max), whites);
 
             // root:         statement_with_endmark + ;
             m_internalRoot = Alloc<SyntaxLoop>("root", statement_with_endmark, 1u, SyntaxLoop::Max);
 
+            return true;
+        } // MakeInteranlSyntax
+
+        bool MakeInternalAction() noexcept
+        {
+            return true;
             ////////////////////////////////////////////////////////////////////////////////////////////
             //
             // 变量与 Action 的关系是：
             // 1. 自定义函数的情况下，变量本身就可以是 Action（函数是Action, 函数的返回值或 this 是变量），而且还可以携带用户自定义数据。
             // 2. 一个变量最多绑定一个 Action，一个 Action 可以挂在多个变量上
-            
+
             //m_actionAllocator.Alloc<BuiltinActionProduction>({ production_statement }) || Error("Faild To Create Action : production_statement");
             //m_actionAllocator.Alloc<>({ let_func }) || Error("Faild To Create Action : let_func");
             //m_actionAllocator.Alloc<>({ let_where }) || Error("Faild To Create Action : let_where");
 
+        } // MakeInternalAction
 
-            return true;
+        // internal: 内置语法
+        bool MakeInternal() noexcept
+        {
+            return MakeInteranlSyntax() && MakeInternalAction();
         }
 
         //static bool Error(StrRef err)
