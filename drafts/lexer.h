@@ -70,6 +70,9 @@ namespace DDL_LEXER
         Mutable,
     };
 
+    class Action;
+    typedef std::vector<Action*> ActionQueue;
+
     // Syntax Variable 
     class Variable
     {
@@ -84,14 +87,11 @@ namespace DDL_LEXER
             m_flag = VariableFlag::Normal;
         }
 
-
-        virtual bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept
+        virtual bool Scan(const StrRef& script, std::size_t& offset, ActionQueue& actions, std::string& err) noexcept
         {
-            (void)script; (void)offset; (void)err;
+            (void)script; (void)offset; (void)actions, (void)err;
             return true;
         }
-
-        virtual bool Action() noexcept { return true; }; // = 0; @TODO
 
         bool IsMutable() const
         {
@@ -115,6 +115,14 @@ namespace DDL_LEXER
              m_mut = newMut;
          }
 
+         void PushAction(ActionQueue& actions) const noexcept
+         {
+             if (m_action)
+             {
+                 actions.push_back(m_action);
+             }
+         }
+
          static Variable*& ThreadLocalDummyVariable() noexcept
          {
              thread_local Variable* dummy = nullptr;
@@ -133,10 +141,11 @@ namespace DDL_LEXER
     protected:
         friend class Lexer;
 
-        Variable*    m_mut = nullptr;  // 用作动态绑定，仅仅被用在 mut_var 的情况；
+        Variable*            m_mut = nullptr;  // 用作动态绑定，仅仅被用在 mut_var 的情况；
         // 但有必须写在基类中，原因是确保其他子类对象可以被安全的重塑为 MutableVariable 对象
-        VariableFlag m_flag = VariableFlag::Normal;
-        StrRef       m_varName;
+        VariableFlag         m_flag = VariableFlag::Normal;
+        StrRef               m_varName;
+        DDL_LEXER::Action*   m_action = nullptr;
     }; // class Variable
 
     namespace traits
@@ -249,13 +258,19 @@ namespace DDL_LEXER
                 Set(mut);
             }
 
-            bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
+            bool Scan(const StrRef& script, std::size_t& offset, ActionQueue& actions, std::string& err) noexcept override
             {
                 // 确保其他 Variable 衍生对象可以安全的重塑为 mut_var
                 static_assert(sizeof(MutableVariable) == sizeof(Variable), "Error"); 
 
                 assert(Valid());
-                return m_mut->Scan(script, offset, err);
+                if (m_mut->Scan(script, offset, actions, err))
+                {
+                    PushAction(actions);
+                    return true;
+                }
+
+                return false;
             }
 
             bool Valid() const
@@ -290,7 +305,8 @@ namespace DDL_LEXER
                     m_leftWhites = nullptr;
 
                     std::string e;
-                    whites->Scan(m_token, offset, e); (void)e;
+                    ActionQueue aq;
+                    whites->Scan(m_token, offset, aq, e); (void)aq, (void)e;
                 }
 
                 m_leftWhites = whites;
@@ -303,13 +319,14 @@ namespace DDL_LEXER
                 return true;
             }
 
-            virtual bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept
+            virtual bool Scan(const StrRef& script, std::size_t& offset, ActionQueue&, std::string& err) noexcept
             {
                 std::size_t oldOffset = offset;
                 if (m_leftWhites)
                 {
                     std::string e;
-                    m_leftWhites->Scan(script, offset, e); (void)e;
+                    ActionQueue aq;
+                    m_leftWhites->Scan(script, offset, aq, e); (void)aq, (void)e;
                 }
 
                 if (ScanImpl(script, offset, err))
@@ -320,8 +337,10 @@ namespace DDL_LEXER
                     }
                     // 对 Token 右边界的零宽断言
                     std::size_t constOffset = offset;
-                    std::string e; (void)(constOffset); (void)(e);
-                    if (m_rightAssert->Scan(script, constOffset, e))
+                    std::string e; 
+                    ActionQueue aq;
+                    (void)(constOffset); (void)(e); (void)aq;
+                    if (m_rightAssert->Scan(script, constOffset, aq, e))
                     {
                         return true;
                     }
@@ -374,13 +393,13 @@ namespace DDL_LEXER
                 m_sequence.push_back(var);
             }
 
-            bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
+            bool Scan(const StrRef& script, std::size_t& offset, ActionQueue& actions, std::string& err) noexcept override
             {
                 std::size_t oldOffset = offset;
                 std::size_t cnt = 0;
                 for (Variable* v : m_sequence)
                 {
-                    if (!v->Scan(script, offset, err))
+                    if (!v->Scan(script, offset, actions, err))
                     {
                         offset = oldOffset;
                         return false;
@@ -390,6 +409,7 @@ namespace DDL_LEXER
 
                 if (m_sequence.size() == cnt)
                 {
+                    PushAction(actions);
                     return true;
                 }
                 offset = oldOffset;
@@ -425,13 +445,19 @@ namespace DDL_LEXER
                 m_branches.push_back(var);
             }
 
-            bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
+            bool Scan(const StrRef& script, std::size_t& offset, ActionQueue& actions, std::string& err) noexcept override
             {
                 for (Variable* v : m_branches)
                 {
-                    if (v->Scan(script, offset, err))
+                    const std::size_t oldQueSize = actions.size();
+                    if (v->Scan(script, offset, actions, err))
                     {
+                        PushAction(actions);
                         return true;
+                    }
+                    else
+                    {
+                        actions.resize(oldQueSize);
                     }
                 }
 
@@ -462,13 +488,13 @@ namespace DDL_LEXER
                 : m_var(var), m_min(min), m_max(max)
             {}
 
-            bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
+            bool Scan(const StrRef& script, std::size_t& offset, ActionQueue& actions, std::string& err) noexcept override
             {
                 std::size_t oldOffset = offset;
                 std::size_t cnt = 0;
                 for (std::size_t i = 0; i < m_min; ++i, ++cnt)
                 { // 最少循环 m_min 次
-                    if (!m_var->Scan(script, offset, err))
+                    if (!m_var->Scan(script, offset, actions, err))
                     {
                         offset = oldOffset;
                         return false;
@@ -478,14 +504,19 @@ namespace DDL_LEXER
                 for (std::size_t i = m_min; i < m_max; ++i, ++cnt)
                 {
                     oldOffset = offset;
-                    if (! m_var->Scan(script, offset, err))
+                    if (! m_var->Scan(script, offset, actions, err))
                     {
                         offset = oldOffset;
                         break;
                     }
                 }
 
-                return ((m_min <= cnt) && (cnt <= m_max));
+                if ((m_min <= cnt) && (cnt <= m_max))
+                {
+                    PushAction(actions);
+                    return true;
+                }
+                return false;
             }
 
             virtual Variable* _Move(VariableAllocator& allocator) noexcept override
@@ -551,7 +582,7 @@ namespace DDL_LEXER
 
         class BuiltinWhite : public Variable
         {
-            bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
+            bool Scan(const StrRef& script, std::size_t& offset, ActionQueue&, std::string& err) noexcept override
             {
                 if (offset < script.len && IsWhite(script[offset]))
                 {
@@ -578,7 +609,7 @@ namespace DDL_LEXER
         class BuildinComment : public Variable
         { // 注释, 目前仅支持 #.*?(\n|$)
         public:
-            bool Scan(const StrRef& script, std::size_t& offset, std::string&) noexcept override
+            bool Scan(const StrRef& script, std::size_t& offset, ActionQueue&, std::string&) noexcept override
             {
                 if (offset < script.len)
                 {
@@ -604,7 +635,7 @@ namespace DDL_LEXER
 
         class BuiltinPunct : public Variable
         { // ispunct : !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~ 
-            bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
+            bool Scan(const StrRef& script, std::size_t& offset, ActionQueue&, std::string& err) noexcept override
             {
                 if (offset < script.len)
                 {
@@ -623,7 +654,7 @@ namespace DDL_LEXER
         class BuiltinTokenRightZeroWidthAssertion : public Variable
         { // Token 右边界的零宽断言
             // $|\s|[\x21–\x2F\x3A–\x40\x5B–\x60\x7B–\x7E]
-            bool Scan(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
+            bool Scan(const StrRef& script, std::size_t& offset, ActionQueue&, std::string& err) noexcept override
             {
                 const std::size_t _offset = offset; // 不消耗字符
                 if (_offset == script.len)
@@ -789,9 +820,10 @@ namespace DDL_LEXER
         bool ScanScript(const StrRef& script, const VarsTable&, 
             std::size_t offset, std::string& err) const noexcept
         {
-            std::vector<StrRef> tokenStream; // TokenStream
+            //std::vector<StrRef> tokenStream; // TokenStream
+            ActionQueue aq;
 
-            if (m_internalRoot->Scan(script, offset, err))
+            if (m_internalRoot->Scan(script, offset, aq, err))
             {
                 return script.len == offset;
             }
