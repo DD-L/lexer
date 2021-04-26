@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <functional>
 #include <vector>
+#include <string>
 #include <deque>
 #include <assert.h>
 
@@ -34,6 +35,13 @@ namespace DDL_LEXER
             : str(_str), len(_len)
         {}
 
+        template <class Iter>
+        constexpr StrRef(Iter&& begin, Iter&& end)
+            : str(&*begin), len((std::size_t)(end - begin))
+        {
+            assert(begin <= end);
+        }
+
         template <std::size_t N>
         constexpr StrRef(const char (&arr)[N] )
             : str(arr), len(N - 1)
@@ -44,6 +52,12 @@ namespace DDL_LEXER
         constexpr StrRef(const StrRef& strRef) noexcept
             : str(strRef.str), len(strRef.len)
         {}
+
+        bool IsNull() const
+        {
+            assert((nullptr == str) ? (0 == len) : true);
+            return nullptr == str;
+        }
 
         std::string ToStdString() const
         {
@@ -64,62 +78,266 @@ namespace DDL_LEXER
 
     class VariableAllocator;
 
-    enum class VariableFlag
+    class VariableType
     {
-        Normal,
-        Mutable,
-    };
+    public:
+        bool IsNormal() const
+        {
+            return !IsMutable();
+        }
 
-    class Action;
-    typedef std::vector<Action*> ActionQueue;
+        void SetNormal()
+        {
+            m_flag = WipeTop();
+        }
+
+        bool IsMutable() const
+        {
+            return 0 != TopBit();
+        }
+
+        void SetMutable()
+        {
+            m_flag |= (~(Classify::classMask));
+        }
+
+        bool IsLoop() const
+        {
+            return  Classify::_Loop == WipeTop();
+        }
+
+        void SetLoop()
+        {
+            m_flag =  KeepTop() | Classify::_Loop;
+        }
+
+        bool IsBranch() const
+        {
+            return Classify::_Branch == WipeTop();
+        }
+
+        void SetBranch()
+        {
+            m_flag = KeepTop() | Classify::_Branch;
+        }
+
+        bool IsSequence() const
+        {
+            return Classify::_Sequence == WipeTop();
+        }
+
+        void SetSequence()
+        {
+            m_flag = KeepTop() | Classify::_Sequence;
+        }
+
+        bool IsTerminator() const
+        {
+            return Classify::_Terminator == WipeTop();
+        }
+
+        void SetTerminator()
+        {
+            m_flag = KeepTop() | Classify::_Terminator;
+        }
+
+        bool IsDollarFunc() const
+        {
+            return Classify::_DollarFunc == WipeTop();
+        }
+
+        void SetDollarFunc()
+        {
+            m_flag = KeepTop() | Classify::_DollarFunc;
+        }
+
+    private:
+        uint8_t WipeTop() const
+        {
+            return (m_flag & Classify::classMask);
+        }
+
+        uint8_t KeepTop() const
+        {
+            return  m_flag & (~(Classify::classMask));
+        }
+
+        uint8_t TopBit() const
+        {
+            return KeepTop() >> 7;
+        }
+
+        enum Classify : uint8_t
+        {
+            _Branch     = 1,
+            _Sequence   = 2,
+            _Loop       = 3,
+            _Terminator = 4,
+            _DollarFunc = 5,
+
+            classMask   = 0x7f,
+        }; // enum Flag
+
+        uint8_t  m_flag = 0;
+    }; // class VariableType
+
+    class Food
+    {
+    public:
+        Food() = default;
+
+        Food(const char* begin, const char* end, 
+            VariableType type, std::size_t constraint, uint64_t ctxInt)
+            : m_begin(begin), m_end(end), m_constraint(constraint), m_type(type)
+        {
+            assert(begin <= end);
+        }
+
+        const char* Begin() const
+        {
+            return m_begin;
+        }
+
+        const char* End() const
+        {
+            return m_end;
+        }
+
+        std::size_t Length() const
+        {
+            assert(Begin() <= End());
+            return End() - Begin();
+        }
+        
+        StrRef ToStrRef() const
+        {
+            return { Begin(), End() };
+        }
+
+        std::size_t BranchID() const
+        {
+            assert(m_type.IsBranch());
+            return m_branchID;
+        }
+
+        std::size_t LoopCount() const
+        {
+            assert(m_type.IsLoop());
+            return m_loopCnt;
+        }
+
+        void* Data() const
+        {
+            return m_data;
+        }
+
+        static uint64_t AsInt(void* data) noexcept
+        {
+            return reinterpret_cast<uint64_t>(data);
+        }
+
+    protected:
+        const char* m_begin = nullptr;
+        const char* m_end   = nullptr;
+
+        union
+        {
+            std::size_t m_constraint = 0;
+            std::size_t m_branchID;
+            std::size_t m_seqSize;
+            std::size_t m_loopCnt;
+        };
+
+        union
+        {
+            uint64_t m_ctxInt = 0;
+            void*    m_data;
+        };
+
+        VariableType    m_type;
+
+    }; // class Food
+
+    class Action
+    {
+    public:
+        virtual ~Action() {}
+        virtual bool Handler(const Food& food, void* ctx, std::string&) = 0;
+    }; // class Action
+
+    struct ActionQueueEle
+    {
+        Action* action = nullptr;
+        Food    food;
+
+        ActionQueueEle() = default;
+        ActionQueueEle(Action* _ac, Food&& _food) : action(_ac), food(std::move(_food)) {}
+    }; // struct ActionQueueEle
+
+    typedef std::vector<ActionQueueEle> ActionQueue;
 
     // Syntax Variable 
     class Variable
     {
     public:
         Variable() = default;
-        explicit Variable(VariableFlag flag)
-            : m_flag(flag)
-        {}
-
+        //explicit Variable(VariableType type)
+        //    : m_type(type)
+        //{}
+        //
         virtual ~Variable() {
             m_mut = nullptr;
-            m_flag = VariableFlag::Normal;
+            m_type = VariableType();
         }
 
-        virtual bool Scan(const StrRef& script, std::size_t& offset, ActionQueue& actions, std::string& err) noexcept
-        {
-            (void)script; (void)offset; (void)actions, (void)err;
-            return true;
-        }
+        virtual bool Scan(const StrRef& script, std::size_t& offset,
+            ActionQueue& actions, std::string& err) noexcept = 0;
+        //{
+        //    (void)script; (void)offset; (void)actions, (void)err;
+        //    return true; // 空串
+        //}
 
         bool IsMutable() const
         {
-            return VariableFlag::Mutable == m_flag;
+            return m_type.IsMutable();
         }
 
-    protected:
-         void SetName(StrRef name) noexcept
+    public:
+        void SetAction(Action* action)
+        {
+            m_action = action;
+        }
+
+        Action* GetAction() const
+        {
+            return m_action;
+        }
+
+    public:
+         void _SetName(StrRef name) noexcept
          {
              m_varName = name;
          }
 
-         const StrRef& Name() const
+         const StrRef& _Name() const
          {
              return m_varName;
          }
 
-         void SwapMut(Variable* newMut, Variable*& oldMut = ThreadLocalDummyVariable()) noexcept
+         void _SwapMut(Variable* newMut, Variable*& oldMut = ThreadLocalDummyVariable()) noexcept
          {
              oldMut = m_mut;
              m_mut = newMut;
          }
 
-         void PushAction(ActionQueue& actions) const noexcept
+    protected:
+         void PushAction(ActionQueue& actions, const StrRef& script,
+             std::size_t start, std::size_t curr, std::size_t constraint, uint64_t data) const noexcept
          {
              if (m_action)
              {
-                 actions.push_back(m_action);
+                 actions.emplace_back(m_action, 
+                     Food(script + start, script + curr, m_type, constraint, data));
              }
          }
 
@@ -143,34 +361,15 @@ namespace DDL_LEXER
 
         Variable*            m_mut = nullptr;  // 用作动态绑定，仅仅被用在 mut_var 的情况；
         // 但有必须写在基类中，原因是确保其他子类对象可以被安全的重塑为 MutableVariable 对象
-        VariableFlag         m_flag = VariableFlag::Normal;
+        VariableType         m_type;
         StrRef               m_varName;
         DDL_LEXER::Action*   m_action = nullptr;
     }; // class Variable
 
-    namespace traits
+    namespace internal
     {
-        //template <class Syntax>
-        struct AllocHelper
-        {
-            template <class Syntax, class Vars>
-            static Variable* Alloc(Vars&, Variable* newVar) noexcept
-            {
-                return newVar;
-            }
-
-            template <class Syntax, class Vars, class... Args>
-            static Variable* Alloc(Vars& vars, Args&&... args) noexcept
-            {
-                Variable* var = new (std::nothrow) Syntax(std::forward<Args>(args)...);
-                if (var)
-                {
-                    vars.push_back(var);
-                }
-                return var;
-            }
-        };
-    } // namespace traits
+        class MutableVariable;
+    } // internal
 
     // 变量内存分配器，同时承担内存持有的职责
     class VariableAllocator
@@ -182,10 +381,27 @@ namespace DDL_LEXER
         }
 
         template <class Syntax, class... Args>
-        Variable* Alloc(Args&&... args) noexcept
+        Syntax* Alloc(Args&&... args) noexcept
         {
-            typedef DDL_LEXER::traits::AllocHelper AllocHelper;
-            return AllocHelper::Alloc<Syntax>(m_vars, std::forward<Args>(args)...);
+            return ForceAlloc<Syntax>(std::forward<Args>(args)...);
+        }
+
+        template <class Syntax,
+            class = typename std::enable_if<!std::is_same<Syntax, internal::MutableVariable>::value>::type>
+        Variable* Alloc(Variable* v) noexcept
+        {
+            return v;
+        }
+
+        template <class Syntax, class... Args>
+        Syntax* ForceAlloc(Args&&... args)
+        {
+            Syntax* var = new (std::nothrow) Syntax(std::forward<Args>(args)...);
+            if (nullptr != var)
+            {
+                m_vars.push_back(var);
+            }
+            return var;
         }
 
     private:
@@ -202,47 +418,36 @@ namespace DDL_LEXER
         std::deque<Variable*>  m_vars;
     }; // class VariableAllocator
 
+    // 字符串字面值内存分配器
+    class MemoryAllocator final
+    {
+    public:
+        char* Alloc(std::size_t n)
+        {
+            char* ret = new char[n];
+            m_holder.emplace_back(ret, n);
+            return ret;
+        }
 
-    //    // class Action
-    //class Action
-    //{
-    //public:
-    //
-    //}; // class Action
-    //
-    //
-    //class ActionAllocator
-    //{
-    //public:
-    //    ~ActionAllocator() noexcept
-    //    {
-    //        Destory();
-    //    }
-    //
-    //    template <class ActionType>
-    //    bool Alloc(const std::vector<Variable*>& vars)
-    //    {
-    //        Action* action = new ActionType();
-    //        m_actios.push_back(action);
-    //        for (Variable* v : vars)
-    //        {
-    //            v->SetAction(action);
-    //        }
-    //    } // Alloc
-    //
-    //private:
-    //    void Destory() noexcept
-    //    {
-    //        for (Action* a : m_actios)
-    //        {
-    //            delete a;
-    //        }
-    //        m_actios.clear();
-    //    }
-    //
-    //private:
-    //    std::deque<Action*> m_actios;
-    //}; // class ActionAllocator
+        ~MemoryAllocator()
+        {
+            for (StrRef& ele : m_holder)
+            {
+                delete[] ele.str;
+            }
+            m_holder.clear();
+        }
+
+    private:
+        std::vector<StrRef> m_holder;
+
+    };
+
+    namespace
+    {
+        struct RangeArg { constexpr RangeArg() = default; };
+        constexpr RangeArg _range_arg;
+    }
 
     namespace internal
     {
@@ -253,8 +458,8 @@ namespace DDL_LEXER
         {
         public:
             explicit MutableVariable(Variable* mut = nullptr)
-                : Variable(VariableFlag::Mutable)
             {
+                m_type.SetMutable();
                 Set(mut);
             }
 
@@ -264,9 +469,10 @@ namespace DDL_LEXER
                 static_assert(sizeof(MutableVariable) == sizeof(Variable), "Error"); 
 
                 assert(Valid());
+                const std::size_t start = offset;
                 if (m_mut->Scan(script, offset, actions, err))
                 {
-                    PushAction(actions);
+                    PushAction(actions, script, start, offset, 0, 0);
                     return true;
                 }
 
@@ -291,11 +497,8 @@ namespace DDL_LEXER
             typedef SyntaxToken _Myt;
 
         public:
-            SyntaxToken() = default;
-
-            SyntaxToken(StrRef token)
-                : m_token(token)
-            {}
+            SyntaxToken() { m_type.SetTerminator(); }
+            explicit SyntaxToken(StrRef token) : m_token(token) { m_type.SetTerminator(); }
 
             [[nodiscard]] bool SetLeftWhites(Variable* whites) noexcept
             { // 要求：当前 Token 被当前设定的白字符从左到右 Scan，不能出现被消耗字符的情况
@@ -319,7 +522,7 @@ namespace DDL_LEXER
                 return true;
             }
 
-            virtual bool Scan(const StrRef& script, std::size_t& offset, ActionQueue&, std::string& err) noexcept
+            virtual bool Scan(const StrRef& script, std::size_t& offset, ActionQueue& actions, std::string& err) noexcept
             {
                 std::size_t oldOffset = offset;
                 if (m_leftWhites)
@@ -329,10 +532,13 @@ namespace DDL_LEXER
                     m_leftWhites->Scan(script, offset, aq, e); (void)aq, (void)e;
                 }
 
-                if (ScanImpl(script, offset, err))
+                uint64_t data = 0;
+                const std::size_t start = offset;
+                if (ScanImpl(script, offset, data, err))
                 {
                     if (nullptr == m_rightAssert)
                     {
+                        PushAction(actions, script, start, offset, 0, data);
                         return true;
                     }
                     // 对 Token 右边界的零宽断言
@@ -342,6 +548,7 @@ namespace DDL_LEXER
                     (void)(constOffset); (void)(e); (void)aq;
                     if (m_rightAssert->Scan(script, constOffset, aq, e))
                     {
+                        PushAction(actions, script, start, offset, 0, data); 
                         return true;
                     }
                 }
@@ -349,7 +556,7 @@ namespace DDL_LEXER
                 return false;
             }
         
-            virtual bool ScanImpl(const StrRef& script, std::size_t& offset, std::string& err) noexcept
+            virtual bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t& data, std::string& err) noexcept
             {
                 if ((offset + m_token.len) <= script.len)
                 {
@@ -359,13 +566,13 @@ namespace DDL_LEXER
                         return true;
                     }
                 }
-
+                (void)data;
                 return false;
             }
 
             virtual Variable* _Move(VariableAllocator& allocator) noexcept override
             {
-                Variable* var = allocator.Alloc<SyntaxToken>(m_token);
+                SyntaxToken* var = allocator.ForceAlloc<SyntaxToken>(m_token);
                 this->~SyntaxToken();
                 return var;
             }
@@ -382,11 +589,22 @@ namespace DDL_LEXER
             template <class... Args>
             explicit SyntaxSequence(Args&&... args)
                 : m_sequence({ std::forward<Args>(args) ... })
-            {}
+            {
+                m_type.SetSequence();
+            }
 
             explicit SyntaxSequence(std::vector<Variable*>&& branch)
                 : m_sequence(std::move(branch))
-            {}
+            {
+                m_type.SetSequence();
+            }
+
+            template <class Iter>
+            SyntaxSequence(RangeArg, Iter&& begin, Iter&& end)
+                : m_sequence(begin, end)
+            {
+                m_type.SetSequence();
+            }
 
             void AppendVariable(Variable* var)
             {
@@ -395,13 +613,13 @@ namespace DDL_LEXER
 
             bool Scan(const StrRef& script, std::size_t& offset, ActionQueue& actions, std::string& err) noexcept override
             {
-                std::size_t oldOffset = offset;
+                const std::size_t start = offset;
                 std::size_t cnt = 0;
                 for (Variable* v : m_sequence)
                 {
                     if (!v->Scan(script, offset, actions, err))
                     {
-                        offset = oldOffset;
+                        offset = start;
                         return false;
                     }
                     ++cnt;
@@ -409,16 +627,17 @@ namespace DDL_LEXER
 
                 if (m_sequence.size() == cnt)
                 {
-                    PushAction(actions);
+                    PushAction(actions, script, start, offset, m_sequence.size(), 0);
                     return true;
                 }
-                offset = oldOffset;
+
+                offset = start;
                 return false;
             }
 
             virtual Variable* _Move(VariableAllocator& allocator) noexcept override
             {
-                Variable* var = allocator.Alloc<SyntaxSequence>(std::move(m_sequence));
+                SyntaxSequence* var = allocator.ForceAlloc<SyntaxSequence>(std::move(m_sequence));
                 this->~SyntaxSequence();
                 return var;
             }
@@ -434,11 +653,22 @@ namespace DDL_LEXER
             template <class... Args>
             explicit SyntaxBranch(Args&&... args)
                 : m_branches({ std::forward<Args>(args) ... })
-            {}
+            {
+                m_type.SetBranch();
+            }
+
+            template <class Iter>
+            SyntaxBranch(RangeArg, Iter&& begin, Iter&& end)
+                : m_branches(begin, end)
+            {
+                m_type.SetBranch();
+            }
 
             explicit SyntaxBranch(std::vector<Variable*>&& branch)
                 : m_branches(std::move(branch))
-            {}
+            {
+                m_type.SetBranch();
+            }
 
             void AppendVariable(Variable* var)
             {
@@ -447,12 +677,15 @@ namespace DDL_LEXER
 
             bool Scan(const StrRef& script, std::size_t& offset, ActionQueue& actions, std::string& err) noexcept override
             {
-                for (Variable* v : m_branches)
+                for (std::size_t index = 0; index < m_branches.size(); ++index)
                 {
                     const std::size_t oldQueSize = actions.size();
+                    std::size_t start = offset;
+
+                    Variable* v = m_branches[index];
                     if (v->Scan(script, offset, actions, err))
                     {
-                        PushAction(actions);
+                        PushAction(actions, script, start, offset, index, 0);
                         return true;
                     }
                     else
@@ -466,7 +699,7 @@ namespace DDL_LEXER
 
             virtual Variable* _Move(VariableAllocator& allocator) noexcept override
             {
-                Variable* var = allocator.Alloc<SyntaxBranch>(std::move(m_branches));
+                SyntaxBranch* var = allocator.ForceAlloc<SyntaxBranch>(std::move(m_branches));
                 this->~SyntaxBranch();
                 return var;
             }
@@ -486,11 +719,14 @@ namespace DDL_LEXER
         public:
             SyntaxLoop(Variable* var, std::size_t min, std::size_t max)
                 : m_var(var), m_min(min), m_max(max)
-            {}
+            {
+                m_type.SetLoop();
+            }
 
             bool Scan(const StrRef& script, std::size_t& offset, ActionQueue& actions, std::string& err) noexcept override
             {
                 std::size_t oldOffset = offset;
+                const std::size_t start = offset;
                 std::size_t cnt = 0;
                 for (std::size_t i = 0; i < m_min; ++i, ++cnt)
                 { // 最少循环 m_min 次
@@ -513,7 +749,7 @@ namespace DDL_LEXER
 
                 if ((m_min <= cnt) && (cnt <= m_max))
                 {
-                    PushAction(actions);
+                    PushAction(actions, script, start, offset, cnt, 0);
                     return true;
                 }
                 return false;
@@ -521,7 +757,7 @@ namespace DDL_LEXER
 
             virtual Variable* _Move(VariableAllocator& allocator) noexcept override
             {
-                Variable* var = allocator.Alloc<SyntaxLoop>(m_var, m_min, m_max);
+                SyntaxLoop* var = allocator.ForceAlloc<SyntaxLoop>(m_var, m_min, m_max);
                 this->~SyntaxLoop();
                 return var;
             }
@@ -541,14 +777,14 @@ namespace DDL_LEXER
             using SyntaxToken::SyntaxToken;
 
         private:
-            bool ScanImpl(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
+            bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t&, std::string& err) noexcept override
             {
                 // [_a-z-A-Z][_0-9a-zA-Z]*
                 // 最小要求是一个字符
                 std::size_t curOffset = offset;
                 if (curOffset >= script.len)
                 {
-                    err = Name().ToStdString() + ": atleast one bytes.....";
+                    err = _Name().ToStdString() + ": atleast one bytes.....";
                     return false;
                 }
 
@@ -569,7 +805,7 @@ namespace DDL_LEXER
                         || (ch >= 'A' && ch <= 'Z')
                         || (ch >= '0' && ch <= '9')))
                     {
-                        //err = Name().ToStdString() + ": Error";
+                        //err = _Name().ToStdString() + ": Error";
                         //return false;
                         break;
                     }
@@ -677,11 +913,13 @@ namespace DDL_LEXER
         public:
             using SyntaxToken::SyntaxToken;
 
-            bool ScanImpl(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
+            bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t& data, std::string& err) noexcept override
             { // 十进制自然数
                 std::size_t curOffset = offset;
                 if (curOffset < script.len)
                 {
+                    data = 0;
+
                     if (IsZero(script[curOffset])) 
                     { 
                         ++curOffset; 
@@ -691,12 +929,14 @@ namespace DDL_LEXER
 
                     if (Is1To9(script[curOffset]))
                     {
+                        data = data * 10 + (script[curOffset] - '0');
                         ++curOffset;
 
                         while (curOffset < script.len)
                         {
                             if (Is0To9(script[curOffset]))
                             {
+                                data = data * 10 + (script[curOffset] - '0');
                                 ++curOffset;
                             }
                             else
@@ -723,7 +963,7 @@ namespace DDL_LEXER
             using SyntaxToken::SyntaxToken;
 
             // 1. 单引号不支持转义，2. 双引号支持转义 3. 支持正则表达式
-            bool ScanImpl(const StrRef& script, std::size_t& offset, std::string& err) noexcept override
+            bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t&, std::string& err) noexcept override
             {
                 // 1. 单引号：      '[^']+
                 // 2. 双引号：      暂不实现
@@ -769,20 +1009,432 @@ namespace DDL_LEXER
                 return false;
             }
         }; // class BuiltinTerminator
-     
-        ////////////////////////////////////
-        //// 内置语法 Action
-        //class BuiltinActionProduction
-        //{
-        //public:
-        //
-        //}; // class BuiltinActionProduction
+       
+        //////////////////////////////////
+        // BulitinActions:
+#undef _BULITIN_ACTIONS_DEFINE_BEGIN
+#undef _BULITIN_ACTIONS_DEFINE_END
+#define _BULITIN_ACTIONS_DEFINE_BEGIN(class_name) class class_name : public Action { 
+#define _BULITIN_ACTIONS_DEFINE_END(class_name)   }
 
+        template <class Vec>
+        static inline void PureVec(Vec& vec) noexcept
+        {
+            vec.clear();
+            vec.shrink_to_fit();
+        }
 
- } // namespace internal
+        struct Context
+        {
+            void ResetStack() noexcept
+            {
+                //PureVec(m_stackHead);
+                //PureVec(m_stackExpr);
+
+#pragma warning("PureVec")
+            }
+
+            struct HeadEle
+            {
+                StrRef      rawRef;
+                std::string strData;  // 低于 C++17 不支持透明Hash 也不支持 std::string_view
+            
+                HeadEle() = default;
+                HeadEle(const StrRef& r, std::string&& s) : rawRef(r), strData(std::move(s)) {}
+            }; // struct HeadEle
+
+            std::vector<SyntaxToken*>                        m_stackTerminator;
+            std::vector<StrRef>                              m_stackIdent;
+            std::vector<HeadEle>                             m_stackHead;
+            std::vector<Variable*>                           m_stackVar;
+            std::vector<Variable*>                           m_stackOperand;
+            std::vector<Variable*>                           m_stackStructExpr;
+            std::vector<Variable*>                           m_stackExpr;
+            std::vector<uint64_t>                            m_stackNumDec;
+            std::vector<std::pair<std::size_t, std::size_t>> m_stackLoopSymbol;
+            std::vector<std::size_t>                         m_stackLoopSymbolOpt;
+            std::vector<Variable*>                           m_stackLoopExpr;
+            std::vector<Variable*>                           m_stackSeqExpr;
+            std::vector<std::size_t>                         m_stackBranchExprSome;
+
+            std::unordered_map<std::string, Variable*>&     m_varMap;     
+            VariableAllocator&                              m_varAlloc;
+            MemoryAllocator&                                m_memAlloc;
+            const std::unordered_map<std::string, Action*>& m_varActionMap;
+        }; // Context
+
+        static inline Context* Ctx(void* ctx) noexcept
+        {
+            assert(nullptr != ctx);
+            return static_cast<Context*>(ctx);
+        }
+
+        /// <summary>
+        ///  BuiltinTerminatorAc
+        /// </summary>
+        _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinTerminatorAc)
+        bool Handler(const Food& food, void* ctx, std::string&) override
+        { // Terminator 分三种： ''_   ""_  //_
+            assert(food.Length() >= 2u);
+            switch (*(food.Begin()))
+            {
+            case '\'':
+                {
+                    // 注意这里可能会存在 后缀！！！!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+                    SyntaxToken* token = Ctx(ctx)->m_varAlloc.ForceAlloc<SyntaxToken>(StrRef(food.Begin() + 1, food.End() - 1));
+                    Ctx(ctx)->m_stackTerminator.push_back(token); // 没有名字
+                }
+                break;
+            case '"':
+                {
+                    // @TODO ！！！ 注意这里要转义 ，而且还有后缀问题 ！！！！！！！！！！！！！！！！！！！！！！！！！！！！！
+                    std::vector<char> aa(food.Begin() + 1, food.End() - 1);
+                    char* buf = Ctx(ctx)->m_memAlloc.Alloc(aa.size()); 
+                    std::memmove(buf, aa.data(), aa.size());
+                    
+                    SyntaxToken* token = Ctx(ctx)->m_varAlloc.ForceAlloc<SyntaxToken>(StrRef(buf, aa.size()));
+                    Ctx(ctx)->m_stackTerminator.push_back(token); // 没有名字
+                }
+                break;
+            case '/':
+                // @TODO 这里也有后缀问题！！！！
+
+                break;
+            default:
+                return false;  // Error LogicBug
+            }
+            return true;
+        }
+        _BULITIN_ACTIONS_DEFINE_END(BuiltinTerminatorAc);
+
+        /// <summary>
+        ///   BuiltinIdentAc
+        /// </summary>
+        _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinIdentAc)
+        bool Handler(const Food& food, void* ctx, std::string&) override
+        {
+            Ctx(ctx)->m_stackIdent.emplace_back(food.Begin(), food.End()); // StrRef 类型
+            return true;
+        }
+        _BULITIN_ACTIONS_DEFINE_END(BuiltinIdentAc);
+        
+        /// <summary>
+        ///  BuiltinHeadAc
+        /// </summary>
+        _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinHeadAc)
+        bool Handler(const Food&, void* ctx, std::string& err) noexcept override
+        {
+            StrRef headRef = Ctx(ctx)->m_stackIdent.back();
+            Ctx(ctx)->m_stackIdent.pop_back();
+
+            std::string head = headRef.ToStdString();
+            auto found = Ctx(ctx)->m_varMap.find(head);
+            if (Ctx(ctx)->m_varMap.end() == found  || found->second->IsMutable())
+            {
+                Ctx(ctx)->m_stackHead.emplace_back(headRef, std::move(head));
+                return true;
+            }
+
+            err = "Variable '" + head + "' : Duplicate definition";
+            return false;
+        }
+        _BULITIN_ACTIONS_DEFINE_END(BuiltinHeadAc);
+        
+        /// <summary>
+        /// BuiltinVarAc
+        /// </summary>
+        _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinVarAc)
+        bool Handler(const Food& food, void* ctx, std::string&) noexcept override
+        {
+            std::string ident = Ctx(ctx)->m_stackIdent.back().ToStdString();
+            Ctx(ctx)->m_stackIdent.pop_back();
+
+            auto found = Ctx(ctx)->m_varMap.find(ident);
+            if (Ctx(ctx)->m_varMap.end() != found)
+            {
+                Ctx(ctx)->m_stackVar.push_back(found->second);
+            }
+            else
+            { // 当前变量表还不存在， 先创建一个 mut_var
+                Variable* mut = Ctx(ctx)->m_varAlloc.ForceAlloc<MutableVariable>();
+                if (nullptr == mut)
+                { // Error
+                    return false;
+                }
+                Ctx(ctx)->m_varMap.emplace(ident, mut);
+            }
+
+            return true;
+        }
+        _BULITIN_ACTIONS_DEFINE_END(BuiltinVarAc);
+
+        /// <summary>
+        ///  BuiltinOperandAc
+        /// </summary>
+        _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinOperandAc)
+        bool Handler(const Food& food, void* ctx, std::string&) noexcept override
+        { // terminator | var
+            switch (food.BranchID())
+            {
+            case 0:
+                Ctx(ctx)->m_stackOperand.push_back(Ctx(ctx)->m_stackTerminator.back());
+                Ctx(ctx)->m_stackTerminator.pop_back();
+                return true;
+            case 1:
+                Ctx(ctx)->m_stackOperand.push_back(Ctx(ctx)->m_stackVar.back());
+                Ctx(ctx)->m_stackVar.pop_back();
+                return true;
+            default:
+                return false;
+            }
+        }
+        _BULITIN_ACTIONS_DEFINE_END(BuiltinOperandAc);
+
+        /// <summary>
+        ///  BuiltinStructExprAc
+        /// </summary>
+        _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinStructExprAc);
+        bool Handler(const Food& food, void* ctx, std::string&) noexcept override
+        { // operand | struct_with_bracket 
+            switch (food.BranchID())
+            {
+            case 0:
+                Ctx(ctx)->m_stackStructExpr.push_back(Ctx(ctx)->m_stackOperand.back());
+                Ctx(ctx)->m_stackOperand.pop_back();
+                return true;
+            case 1:
+                Ctx(ctx)->m_stackStructExpr.push_back(Ctx(ctx)->m_stackExpr.back());
+                Ctx(ctx)->m_stackExpr.pop_back();
+                return true;
+            default:
+                return false;
+            }
+        }
+        _BULITIN_ACTIONS_DEFINE_END(BuiltinStructExprAc);
+
+        /// <summary>
+        ///  BuiltinNumDecAc
+        /// </summary>
+        _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinNumDecAc)
+        bool Handler(const Food& food, void* ctx, std::string&) noexcept override
+        { // 这里面的 Num 只支持 u64 类型 最大值 0xFFFFFFFFFFFFFFFF = 18446744073709551615
+            if (food.Length() > 20)
+            {
+                return false;
+            }
+            else if (food.Length() == 20)
+            { // @TODO 最大不能超过 18446744073709551615
+
+            }
+
+            Ctx(ctx)->m_stackNumDec.push_back(Food::AsInt(food.Data()));
+            return true;
+        }
+        _BULITIN_ACTIONS_DEFINE_END(BuiltinNumDecAc);
+
+        /// <summary>
+        ///   BuiltinLoopSymbolAc
+        /// </summary>
+        _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinLoopSymbolAc)
+        bool Handler(const Food& food, void* ctx, std::string& err) noexcept override
+        { // '?' | '*' | "+" | loop_n | loop_m_n | loop_m_max ;
+            switch (food.BranchID())
+            {
+            case 0: // ?
+                Ctx(ctx)->m_stackLoopSymbol.emplace_back(0u, 1u);
+                return true;
+            case 1: // *
+                Ctx(ctx)->m_stackLoopSymbol.emplace_back(0u, SyntaxLoop::Max);
+                return true;
+            case 2: // +
+                Ctx(ctx)->m_stackLoopSymbol.emplace_back(1u, SyntaxLoop::Max);
+                return true;
+            case 3: // loop_n
+                {
+                    std::size_t n = Ctx(ctx)->m_stackNumDec.back();
+                    Ctx(ctx)->m_stackNumDec.pop_back();
+                    Ctx(ctx)->m_stackLoopSymbol.emplace_back(n, n);
+                }
+                return true;
+            case 4: // loop_m_n
+                {
+                    std::size_t n = Ctx(ctx)->m_stackNumDec.back();
+                    Ctx(ctx)->m_stackNumDec.pop_back();
+                    std::size_t m = Ctx(ctx)->m_stackNumDec.back();
+                    Ctx(ctx)->m_stackNumDec.pop_back();
+
+                    if (m > n)
+                    {
+                        err = "Illegal Range { " + std::to_string(m) +", " + std::to_string(n) + " }";
+                        return false;
+                    }
+
+                    Ctx(ctx)->m_stackLoopSymbol.emplace_back(m, n);
+                }
+                return true;
+            case 5: // loop_m_max
+                {
+                    std::size_t n = Ctx(ctx)->m_stackNumDec.back();
+                    Ctx(ctx)->m_stackNumDec.pop_back();
+                    Ctx(ctx)->m_stackLoopSymbol.emplace_back(n, SyntaxLoop::Max);
+                }
+                return true;
+            default:
+                return false;
+            }
+        }
+        _BULITIN_ACTIONS_DEFINE_END(BuiltinLoopSymbolAc);
+
+        /// <summary>
+        ///  BuiltinLoopSymbolOptAc
+        /// </summary>
+        _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinLoopSymbolOptAc)
+        bool Handler(const Food& food, void* ctx, std::string&) noexcept override
+        {
+            Ctx(ctx)->m_stackLoopSymbolOpt.push_back(food.LoopCount());
+            return true;
+        }
+        _BULITIN_ACTIONS_DEFINE_END(BuiltinLoopSymbolOptAc);
+
+        /// <summary>
+        ///  BuiltinLoopExprAc
+        /// </summary>
+        _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinLoopExprAc)
+        bool Handler(const Food& food, void* ctx, std::string&) noexcept override
+        {
+            std::size_t loopSymbolOpt = Ctx(ctx)->m_stackLoopSymbolOpt.back();
+            Ctx(ctx)->m_stackLoopSymbolOpt.pop_back();
+            assert(loopSymbolOpt <= 1u);
+
+            Variable* structExpr = Ctx(ctx)->m_stackStructExpr.back();
+            Ctx(ctx)->m_stackStructExpr.pop_back();
+
+            if (0 == loopSymbolOpt)
+            { // 
+                Ctx(ctx)->m_stackLoopExpr.push_back(structExpr);
+            }
+            else
+            { // 组建循环 struct :
+                const std::pair<std::size_t, std::size_t>& loopCntPair =
+                    Ctx(ctx)->m_stackLoopSymbol.back();
+                Ctx(ctx)->m_stackLoopSymbol.pop_back();
+
+                SyntaxLoop* loopExpr = Ctx(ctx)->m_varAlloc.ForceAlloc<SyntaxLoop>(
+                    structExpr, loopCntPair.first, loopCntPair.second);
+                Ctx(ctx)->m_stackLoopExpr.push_back(loopExpr);
+            }
+
+            return true;
+        }
+        _BULITIN_ACTIONS_DEFINE_END(BuiltinLoopExprAc);
+
+        /// <summary>
+        ///  BuiltinSeqExprAc
+        /// </summary>
+        _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinSeqExprAc)
+        bool Handler(const Food& food, void* ctx, std::string&) noexcept override
+        {
+            std::size_t seqEleCnt = food.LoopCount();
+            assert(seqEleCnt <= Ctx(ctx)->m_stackLoopExpr.size());
+            auto begin = Ctx(ctx)->m_stackLoopExpr.end() - seqEleCnt;
+            auto end   = Ctx(ctx)->m_stackLoopExpr.end();
+
+            SyntaxSequence* seqExpr = Ctx(ctx)->m_varAlloc.ForceAlloc<SyntaxSequence>(_range_arg, begin, end);
+            Ctx(ctx)->m_stackSeqExpr.push_back(seqExpr);
+            return true;
+        }
+        _BULITIN_ACTIONS_DEFINE_END(BuiltinSeqExprAc);
+
+        /// <summary>
+        ///  BuiltinBranchExprSomeAc
+        /// </summary>
+        _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinBranchExprSomeAc)
+        bool Handler(const Food& food, void* ctx, std::string&) noexcept override
+        {
+            Ctx(ctx)->m_stackBranchExprSome.push_back(food.LoopCount());
+            return true;
+        }
+        _BULITIN_ACTIONS_DEFINE_END(BuiltinBranchExprSomeAc);
+
+        /// <summary>
+        ///  BuiltinBranchPairsAc = BuiltinExprAc  
+        ///    expr : branch_paris;
+        /// </summary>
+        _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinExprAc)
+        bool Handler(const Food& food, void* ctx, std::string&) noexcept override
+        {
+            std::size_t cnt = Ctx(ctx)->m_stackBranchExprSome.back() + 1u;
+            Ctx(ctx)->m_stackBranchExprSome.pop_back();
+
+            assert(cnt <= Ctx(ctx)->m_stackSeqExpr.size());
+            auto begin = Ctx(ctx)->m_stackSeqExpr.end() - cnt;
+            auto end   = Ctx(ctx)->m_stackSeqExpr.end();
+
+            SyntaxBranch* branchPairs = Ctx(ctx)->m_varAlloc.ForceAlloc<SyntaxBranch>(_range_arg, begin, end);
+            Ctx(ctx)->m_stackExpr.push_back(branchPairs);
+            return true;
+        }
+        _BULITIN_ACTIONS_DEFINE_END(BuiltinExprAc);
+
+        /// <summary>
+        ///  BuiltinProductionStatementAc
+        /// </summary>
+        _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinProductionStatementAc)
+        bool Handler(const Food& food, void* ctx, std::string& err) noexcept override
+        {
+            Variable* body = Ctx(ctx)->m_stackExpr.back();
+            Ctx(ctx)->m_stackExpr.pop_back();
+
+            auto&& _head = Ctx(ctx)->m_stackHead.back();
+            StrRef      headRef = _head.rawRef;
+            std::string headData = std::move(_head.strData);
+            Ctx(ctx)->m_stackHead.pop_back();
+
+            auto found = Ctx(ctx)->m_varMap.find(headData);
+            if (Ctx(ctx)->m_varMap.end() == found)
+            {
+                if (0 != body->_Name().IsNull() && body->GetAction())
+                {// 比如：
+                    // ident : $Ident(); # ident 挂了一个 Action
+                    // var : ident;      # var 也挂了一个 Action, 那么此时 var 应该是一个 mut_var
+                    auto acFound = Ctx(ctx)->m_varActionMap.find(headData);
+                    if (Ctx(ctx)->m_varActionMap.end() != acFound)
+                    { // head 也挂了一个 Action
+                        body = Ctx(ctx)->m_varAlloc.ForceAlloc<MutableVariable>(body); // new body
+                        assert(body->IsMutable());
+                    }
+                }
+                Ctx(ctx)->m_varMap.emplace(headData, body); // 直接绑定关系 (直接引用)
+                body->_SetName(headRef); // head 原始文本
+                return true;
+            }
+            else
+            {
+                Variable* var = found->second;
+                if (var->IsMutable())
+                {
+#pragma warning("                  使得 var 的层级最小，（遇到 Action 终止优化）")
+                    //if (var 的 mut 只有一层)
+                    {
+                        var->_SwapMut(body);
+                        return true;
+                    }
+                }
+                else
+                {
+                    err = "BUG xcxxxcxvsefwefwefwefwefwefwefwefwfwefwefwef\n";
+                    return false;
+                }
+            }
+        }
+        _BULITIN_ACTIONS_DEFINE_END(BuiltinProductionStatementAc);
+
+#undef _BULITIN_ACTIONS_DEFINE_BEGIN
+#undef _BULITIN_ACTIONS_DEFINE_END
+} // namespace internal
 
     // class Lexer
-    class Lexer
+    class Lexer final
     {
     public:
         typedef std::unordered_map<std::string, Variable*> VarsTable;
@@ -791,6 +1443,11 @@ namespace DDL_LEXER
         Lexer()
         {
             MakeInternal();
+        }
+
+        ~Lexer() noexcept
+        {
+            DestoryInternalActions();
         }
 
         VariableAllocator& GetVariableAllocator()
@@ -820,9 +1477,8 @@ namespace DDL_LEXER
         bool ScanScript(const StrRef& script, const VarsTable&, 
             std::size_t offset, std::string& err) const noexcept
         {
-            //std::vector<StrRef> tokenStream; // TokenStream
             ActionQueue aq;
-
+            // aq.reserve(2 * ); // @TODO <----
             if (m_internalRoot->Scan(script, offset, aq, err))
             {
                 return script.len == offset;
@@ -831,7 +1487,38 @@ namespace DDL_LEXER
             return false;
         }
 
+        template <class MyAction, class...Args>
+        Action* AllocAction(Args&&... args)
+        {
+            static_assert(std::is_base_of<Action, MyAction>::value, "Error");
+
+            Action* action = new MyAction(std::forward<Args>(args)...);
+            m_internalActions.push_back(action);
+            return action;
+        }
+
     private:
+        template <class T, class... Args,
+            class = typename std::enable_if<!std::is_base_of<internal::SyntaxToken, T>::value>::type>
+        Variable* AllocDollarFn(StrRef name, Args&&...args) noexcept
+        {
+            Variable* ret = m_variableAllocator.ForceAlloc<T>(std::forward<Args>(args)...);
+            if (nullptr != ret)
+            {
+                ret->_SetName(name);
+            }
+            return ret;
+        }
+
+        template <class T,
+            class = typename std::enable_if<std::is_base_of<internal::SyntaxToken, T>::value>::type>
+            Variable* AllocDollarFn(StrRef name, StrRef token,
+                Variable* whites = nullptr, Variable* rightAssert = nullptr) noexcept
+        {
+            return Alloc<T>(name, token, whites, rightAssert);
+        }
+
+
         template <class T, class... Args,
            class = typename std::enable_if<!std::is_base_of<internal::SyntaxToken, T>::value>::type>
         Variable* Alloc(StrRef name, Args&&...args) noexcept
@@ -839,16 +1526,17 @@ namespace DDL_LEXER
             Variable* ret = m_variableAllocator.Alloc<T>(std::forward<Args>(args)...);
             if (nullptr != ret)
             {
-                ret->SetName(name);
+                if (ret->_Name().IsNull())
+                {
+                    ret->_SetName(name);
+                }
+                else
+                {
+                    assert(0);  // <--------------- debug 
+                    return nullptr;
+                }
             }
             return ret;
-        }
-
-        template <class T, 
-            class = typename std::enable_if<std::is_base_of<Variable, T>::value>::type>
-        Variable* Alloc(Variable* var) noexcept
-        {
-            return m_variableAllocator.Alloc<T>(var);
         }
 
         template <class T, 
@@ -857,10 +1545,10 @@ namespace DDL_LEXER
             Variable* whites = nullptr, Variable* rightAssert = nullptr) noexcept
         {
             internal::SyntaxToken* ret 
-                = (internal::SyntaxToken*)m_variableAllocator.Alloc<T>(token);
+                = (internal::SyntaxToken*)m_variableAllocator.ForceAlloc<T>(token);
             if (nullptr != ret)
             {
-                ret->SetName(name);
+                ret->_SetName(name);
                 if (! ret->SetLeftWhites(whites))
                 {
                     return nullptr;
@@ -871,28 +1559,29 @@ namespace DDL_LEXER
             return ret;
         }
 
-        bool MakeInteranlSyntax() noexcept
+        //// internal: 内置语法
+        bool MakeInternal() noexcept
         {
             using namespace internal;
 
-            Variable* white = Alloc<BuiltinWhite>("white");
-            Variable* comment = Alloc<BuildinComment>("comment");
-            Variable* whites = Alloc<SyntaxLoop>("whites",
+            Variable* white   = AllocDollarFn<BuiltinWhite>("white");
+            Variable* comment = AllocDollarFn<BuildinComment>("comment");
+            Variable* whites  = Alloc<SyntaxLoop>("whites",
                 Alloc<SyntaxBranch>("white_or_comment", white, comment), 0, SyntaxLoop::Max);
-            Variable* tokenRightAssert = Alloc<BuiltinTokenRightZeroWidthAssertion>("tokenRightAssert");
+            Variable* tokenRightAssert = AllocDollarFn<BuiltinTokenRightZeroWidthAssertion>("tokenRightAssert");
 
             // ident      : ; # func  (暂时使用函数)
-            Variable* ident = Alloc<BuiltinIdent>("ident", "", whites); // ident 不需要右边界断言
-            // head       :  ident ;
-            Variable* head = Alloc<SyntaxSequence>(ident);
-            // var        :  ident ;
-            Variable* var = Alloc<SyntaxSequence>(ident);
+            Variable* ident = AllocDollarFn<BuiltinIdent>("ident", "", whites); // ident 不需要右边界断言
+            // head  :  ident; # 正常情况下，先挂 Action, 所以这里知道 head 是 mut 还是直接引用
+            Variable* head = Alloc<MutableVariable>("head", ident); // 未定义的变量名 
+            // var   :  ident; # 同上
+            Variable* var  = Alloc<MutableVariable>("var", ident);  // 已经定义的变量名
 
             // terminator    : '.*?'  # 或者正则表达式 
-            Variable* terminator = Alloc<BuiltinTerminator>("terminator", "", whites);
+            Variable* terminator = AllocDollarFn<BuiltinTerminator>("terminator", "", whites);
 
-            // operand 
-            Variable* operand = Alloc<SyntaxBranch>("operand", terminator, var);
+            // operand : terminator | var;
+            Variable* operand = Alloc<SyntaxBranch>("operand", terminator, var); // @TODO 这里应该添加 func_expr, 从而去除 let func expr
 
             // expr : 优先级 循环 > 序列 > 分支
             Variable* $0x7B = Alloc<SyntaxToken>("{", "{", whites);
@@ -911,7 +1600,7 @@ namespace DDL_LEXER
             Variable* struct_expr = Alloc<SyntaxBranch>("struct_expr", operand, struct_with_bracket);
 
             // num_dec regex : [1-9][0-9]*|0 ;
-            Variable* num_dec = Alloc<BuiltinNaturalNumDec>("num_dec", "", whites, tokenRightAssert);
+            Variable* num_dec = AllocDollarFn<BuiltinNaturalNumDec>("num_dec", "", whites, tokenRightAssert);
 
             Variable* loop_n = Alloc<SyntaxSequence>("loop_n", $0x7B, num_dec, $0x7D);
             // loop_m_n   : '{' num_dec ',' num_dec '}';
@@ -941,11 +1630,11 @@ namespace DDL_LEXER
             // branch_pairs   : branch_expr branch_expr_some
             Variable* branch_pairs = Alloc<SyntaxSequence>("branch_pairs", seq_expr, branch_expr_some);
 
-            // expr      ： branch_expr;
+            // expr      ： branch_pairs;
             assert(expr->IsMutable());
-            expr->SwapMut(branch_pairs);
+            expr->_SwapMut(branch_pairs);
 
-            // productionStatement :  head body ';' ; 
+            // productionStatement :  head expr ';' ; 
             Variable* production_statement = Alloc<SyntaxSequence>("production_statement", head, Alloc<SyntaxToken>(":", ":", whites), expr);
 
             // semicolon_opt : ','?;
@@ -963,19 +1652,24 @@ namespace DDL_LEXER
                 0, SyntaxLoop::Max);
 
 
-            // let var = var2, where a -> b, c -> d; // @TODO 这里是否要求 a 和 c 必须是非终结符或指向终结符的变量？ !!!!!!!!!!!!!! 后者无歧义？？？
+            //// let var = var2, where a -> b, c -> d; // @TODO 这里是否要求 a 和 c 必须是非终结符或指向终结符的变量？ !!!!!!!!!!!!!! 后者无歧义？？？
+            //// let_where : 'let' head '=' var (','? 'where' operand '->' operand (','? operand '->' operand)*)?
+            //Variable* where_clause = Alloc<SyntaxSequence>("where_clause", semicolon_opt, where_keyword, operand_swap, operand_swap_some);
+            //Variable* where_clause_opt = Alloc<SyntaxLoop>("where_clause_opt", where_clause, 0u, 1u);
+            //Variable* let_where = Alloc<SyntaxSequence>("let_where", let_keyword, head, equal_mark, var, where_clause_opt);
+
             // let_where : 'let' head '=' var ','? 'where' operand '->' operand (','? operand '->' operand)*
-            //Variable* let_where = Alloc<SyntaxSequence>("let_where", let_var_clause, where_clause);
-            Variable* let_where = Alloc<SyntaxSequence>("let_where", let_keyword, head, equal_mark, var, semicolon_opt,
-                where_keyword, operand_swap, operand_swap_some);
+            Variable* let_where = Alloc<SyntaxSequence>("let_where", let_keyword, head, equal_mark, var, 
+                semicolon_opt, where_keyword, operand_swap, operand_swap_some);
 
             // let var = $func();
             // func_expr: 'let' var '=' /$func\s*(/ (operand(',' operand)*) ? ')';
             Variable* local_func_prefix = Alloc<SyntaxToken>("local_func_prefix", "$", whites);
             Variable* func_name = Alloc<SyntaxSequence>("func_name", local_func_prefix, ident);
-            Variable* suffix_args = Alloc<SyntaxSequence>("suffix_args", $0x2C, operand);
+            Variable* func_arg = Alloc<SyntaxBranch>("func_arg", num_dec, operand);
+            Variable* suffix_args = Alloc<SyntaxSequence>("suffix_args", $0x2C, func_arg);
             Variable* suffix_args_some = Alloc<SyntaxLoop>("suffix_args_some", suffix_args, 0, SyntaxLoop::Max);
-            Variable* func_args = Alloc<SyntaxSequence>("func_args", operand, suffix_args_some);
+            Variable* func_args = Alloc<SyntaxSequence>("func_args", func_arg, suffix_args_some);
             Variable* func_args_opt = Alloc<SyntaxLoop>("func_args_opt", func_args, 0, 1u);
             Variable* func_expr = Alloc<SyntaxSequence>("func_expr", func_name, $0x28, func_args_opt, $0x29);
             Variable* let_func = Alloc<SyntaxSequence>("let_func", let_keyword, head, equal_mark, func_expr);
@@ -990,71 +1684,88 @@ namespace DDL_LEXER
             // root:         statement_with_endmark + ;
             m_internalRoot = Alloc<SyntaxLoop>("root", statement_with_endmark, 1u, SyntaxLoop::Max);
 
+//
+//           /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//           // Action
+//           Bind(terminator, AllocAction<BuiltinTerminatorAc>()) || Error("BUG: bind 'terminator' action");
+//           Bind(ident, AllocAction<BuiltinIdentAc>())           || Error("BUG: bind 'ident' action");
+//           Bind(head, AllocAction<BuiltinHeadAc>())             || Error("BUG: bind 'head' action");
+//           Bind(var, AllocAction<BuiltinVarAc>())               || Error("BUG: bind 'var' action");
+//           Bind(operand, AllocAction<BuiltinOperandAc>())       || Error("BUG: bind 'operand' action");
+//           Bind(struct_expr, AllocAction<BuiltinStructExprAc>())|| Error("BUG: bind 'struct_expr' action");
+//           Bind(num_dec, AllocAction<BuiltinNumDecAc>())        || Error("BUG: bind 'num_dec' action");
+//           Bind(loop_symbol, AllocAction<BuiltinLoopSymbolAc>())|| Error("BUG: bind 'loop_symbol' action");
+//           Bind(loop_symbol_opt, AllocAction<BuiltinLoopSymbolOptAc>()) || Error("BUG: bind 'loop_symbol_opt' action");
+//           Bind(loop_expr, AllocAction<BuiltinLoopExprAc>())    || Error("BUG: bind 'loop_expr' action");
+//           Bind(seq_expr, AllocAction<BuiltinSeqExprAc>())      || Error("BUG: bind 'seq_expr' action");
+//           Bind(branch_expr_some, AllocAction<BuiltinBranchExprSomeAc>()) || Error("BUG: bind 'branch_expr_some' action");
+//           Bind(expr, AllocAction<BuiltinExprAc>())             || Error("BUG: bind 'expr' action");
+//           Bind(production_statement, AllocAction<BuiltinProductionStatementAc>()) || Error("BUG: bind 'production_statement' action");
+//
+
             return true;
         } // MakeInteranlSyntax
 
-        bool MakeInternalAction() noexcept
+        bool Bind(Variable* var, Action* action) noexcept
         {
-            return true;
-            ////////////////////////////////////////////////////////////////////////////////////////////
-            //
-            // 变量与 Action 的关系是：
-            // 1. 自定义函数的情况下，变量本身就可以是 Action（函数是Action, 函数的返回值或 this 是变量），而且还可以携带用户自定义数据。
-            // 2. 一个变量最多绑定一个 Action，一个 Action 可以挂在多个变量上
+            if (nullptr == var || nullptr == action)
+            {
+                return false;
+            }
 
-            //m_actionAllocator.Alloc<BuiltinActionProduction>({ production_statement }) || Error("Faild To Create Action : production_statement");
-            //m_actionAllocator.Alloc<>({ let_func }) || Error("Faild To Create Action : let_func");
-            //m_actionAllocator.Alloc<>({ let_where }) || Error("Faild To Create Action : let_where");
+            if (nullptr == var->GetAction())
+            {
+                var->SetAction(action);
+                return true;
+            } 
+            else
+            { // 再加一层 Action ???
+#pragma warning("")
+                // 兼容 
+                // ident : $Ident();
+                // head  : ident
+                // var   : ident;
 
-        } // MakeInternalAction
-
-        // internal: 内置语法
-        bool MakeInternal() noexcept
-        {
-            return MakeInteranlSyntax() && MakeInternalAction();
+                // 其中：
+                // ident <- action
+                // head  <- action
+                // var   <- action
+                return false;
+            }
         }
 
-        //static bool Error(StrRef err)
-        //{
-        //    throw(err.ToStdString());
-        //}
+        bool Bind(const std::string& var, Action* action) noexcept
+        {
+            Variable* v = nullptr;
+            // TODO
+            // -----<
+            return Bind(v, action);
+        }
+
+        static bool Error(StrRef err)
+        {
+            throw(err.ToStdString());
+        }
+
+        void DestoryInternalActions() noexcept
+        {
+            for (Action* action : m_internalActions)
+            {
+                delete action;
+            }
+            m_internalActions.clear();
+        }
 
     private:
         Variable*                                  m_internalRoot;
-        VariableAllocator                          m_variableAllocator;
+        VariableAllocator                          m_variableAllocator;  // 该 Allocator 可能是过度设计，后面要简化这个结构和逻辑！！！！！@TODO
+        std::deque<Action*>                        m_internalActions;    // 内置文法动作集合            
         std::unordered_map<std::string, Variable*> m_userVariablesMap;   // 输出(1) 
         //ActionAllocator                            m_actionAllocator;
     }; // class Lexer
 
-
-    /*
-char_1_9 : '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' ;
-char_0_9 : '0' | char_1_9 ;
-
-num  :  char_1_9 char_0_9* | '0' ;
-
-
-loop_suffix_n_m   : '{' num ',' num '}' ;
-loop_suffix_n     : '{' num '}'         ;
-loop_suffix_n_max : '{' num ',' '}'     ;
-
-loop_suffix : '?' | '*' | '+' | loop_suffix_n_m | loop_suffix_n  | loop_suffix_n_max ;
-
-
-decl  branch;
-
-expr   : ident | ( branch )  ;
-
-loop   :  expr loop_suffix ? ; 
-seq    :  loop +             ;
-branch_vec : ( '|' seq )*    ; 
-branch :  seq  branch_vec    ;
-    
-    */
-
     //////////////////////////////////////////////
     // Impl
-
     template <class Allocator>
     void Variable::ReshapeToMut(Allocator& allocator) noexcept
     {
