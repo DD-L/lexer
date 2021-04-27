@@ -75,133 +75,62 @@ namespace DDL_LEXER
         }
     }; //  StrRef
 
-
+    // forward decl 
     class VariableAllocator;
 
     class VariableType
     {
     public:
-        bool IsNormal() const
-        {
-            return !IsMutable();
-        }
+        bool IsNormal() const { return !IsMutable(); }
+        bool IsMutable() const { return 0 != TopBit(); }
+        bool IsLoop() const { return  Classify::_Loop == WipeTop(); }
+        bool IsBranch() const { return Classify::_Branch == WipeTop(); }
+        bool IsSequence() const { return Classify::_Sequence == WipeTop(); }
+        bool IsTerminator() const { return Classify::_Terminator == WipeTop(); }
+        bool IsDollarFunc() const { return Classify::_DollarFunc == WipeTop(); }
 
-        void SetNormal()
-        {
-            m_flag = WipeTop();
-        }
-
-        bool IsMutable() const
-        {
-            return 0 != TopBit();
-        }
-
-        void SetMutable()
-        {
-            m_flag |= (~(Classify::classMask));
-        }
-
-        bool IsLoop() const
-        {
-            return  Classify::_Loop == WipeTop();
-        }
-
-        void SetLoop()
-        {
-            m_flag =  KeepTop() | Classify::_Loop;
-        }
-
-        bool IsBranch() const
-        {
-            return Classify::_Branch == WipeTop();
-        }
-
-        void SetBranch()
-        {
-            m_flag = KeepTop() | Classify::_Branch;
-        }
-
-        bool IsSequence() const
-        {
-            return Classify::_Sequence == WipeTop();
-        }
-
-        void SetSequence()
-        {
-            m_flag = KeepTop() | Classify::_Sequence;
-        }
-
-        bool IsTerminator() const
-        {
-            return Classify::_Terminator == WipeTop();
-        }
-
-        void SetTerminator()
-        {
-            m_flag = KeepTop() | Classify::_Terminator;
-        }
-
-        bool IsDollarFunc() const
-        {
-            return Classify::_DollarFunc == WipeTop();
-        }
-
-        void SetDollarFunc()
-        {
-            m_flag = KeepTop() | Classify::_DollarFunc;
-        }
+        void SetNormal() { m_flag = WipeTop(); }
+        void SetMutable() { m_flag |= (~(Classify::classMask)); }
+        void SetLoop() { m_flag = KeepTop() | Classify::_Loop; }
+        void SetBranch() { m_flag = KeepTop() | Classify::_Branch; }
+        void SetSequence() { m_flag = KeepTop() | Classify::_Sequence; }
+        void SetTerminator() { m_flag = KeepTop() | Classify::_Terminator; }
+        void SetDollarFunc() { m_flag = KeepTop() | Classify::_DollarFunc; }
 
     private:
-        uint8_t WipeTop() const
-        {
-            return (m_flag & Classify::classMask);
-        }
+        uint8_t WipeTop() const { return (m_flag & Classify::classMask); }
+        uint8_t KeepTop() const { return  m_flag & (~(Classify::classMask)); }
+        uint8_t TopBit() const { return KeepTop() >> 7; }
 
-        uint8_t KeepTop() const
-        {
-            return  m_flag & (~(Classify::classMask));
-        }
-
-        uint8_t TopBit() const
-        {
-            return KeepTop() >> 7;
-        }
-
+    private:
         enum Classify : uint8_t
         {
-            _Branch     = 1,
-            _Sequence   = 2,
-            _Loop       = 3,
-            _Terminator = 4,
-            _DollarFunc = 5,
-
-            classMask   = 0x7f,
+            _Branch     = 1,  _Sequence   = 2,
+            _Loop       = 3,  _Terminator = 4,
+            _DollarFunc = 5,  classMask   = 0x7f,
         }; // enum Flag
 
-        uint8_t  m_flag = 0;
+        uint8_t m_flag = 0;
     }; // class VariableType
 
-    class Food
+    class Food final
     {
     public:
+        ~Food() {}
         Food() = default;
-
         Food(const char* begin, const char* end, 
             VariableType type, std::size_t constraint, uint64_t ctxInt)
-            : m_begin(begin), m_end(end), m_constraint(constraint), m_type(type)
+            : m_begin(begin), m_end(end), 
+            m_constraint(constraint), m_ctxInt(ctxInt), m_type(type)
         {
             assert(begin <= end);
         }
 
-        const char* Begin() const
-        {
-            return m_begin;
-        }
-
-        const char* End() const
-        {
-            return m_end;
-        }
+    public:
+        void* Data() const { return m_data; }
+        const char* Begin() const { return m_begin; }
+        const char* End() const { return m_end; }
+        StrRef ToStrRef() const { return { Begin(), End() }; }
 
         std::size_t Length() const
         {
@@ -209,11 +138,6 @@ namespace DDL_LEXER
             return End() - Begin();
         }
         
-        StrRef ToStrRef() const
-        {
-            return { Begin(), End() };
-        }
-
         std::size_t BranchID() const
         {
             assert(m_type.IsBranch());
@@ -226,14 +150,9 @@ namespace DDL_LEXER
             return m_loopCnt;
         }
 
-        void* Data() const
-        {
-            return m_data;
-        }
-
-        static uint64_t AsInt(void* data) noexcept
-        {
-            return reinterpret_cast<uint64_t>(data);
+        static uint64_t AsInt(void* data) noexcept 
+        { 
+            return reinterpret_cast<uint64_t>(data); 
         }
 
     protected:
@@ -255,7 +174,6 @@ namespace DDL_LEXER
         };
 
         VariableType    m_type;
-
     }; // class Food
 
     class Action
@@ -1179,7 +1097,7 @@ namespace DDL_LEXER
         /// </summary>
         _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinOperandAc)
         bool Handler(const Food& food, void* ctx, std::string&) noexcept override
-        { // terminator | var
+        { // terminator | func_expr | var
             switch (food.BranchID())
             {
             case 0:
@@ -1187,12 +1105,19 @@ namespace DDL_LEXER
                 Ctx(ctx)->m_stackTerminator.pop_back();
                 return true;
             case 1:
+#pragma warning("FuncExpr")
+                //Ctx(ctx)->m_stackOperand.push_back(Ctx(ctx)->m_stackFuncExpr.back());
+                //Ctx(ctx)->m_stackFuncExpr.pop_back();
+                assert(0);
+                return true;
+            case 2:
                 Ctx(ctx)->m_stackOperand.push_back(Ctx(ctx)->m_stackVar.back());
                 Ctx(ctx)->m_stackVar.pop_back();
                 return true;
             default:
                 return false;
             }
+
         }
         _BULITIN_ACTIONS_DEFINE_END(BuiltinOperandAc);
 
@@ -1443,7 +1368,7 @@ namespace DDL_LEXER
     class Lexer final
     {
     public:
-        typedef std::unordered_map<std::string, Variable*> VarsTable;
+        typedef std::unordered_map<std::string, Action*> ActionTable;
 
     public:
         Lexer()
@@ -1462,11 +1387,17 @@ namespace DDL_LEXER
         }
 
         // 线程无关
-        bool SetGrammar(StrRef script, const VarsTable& varsTable, std::string& err) const noexcept
+        bool SetGrammar(StrRef script, const ActionTable& acTable, void* ctx, std::string& err) const noexcept
         {
             err.clear();
             std::size_t offset = 0;
-            return ScanScript(script, varsTable, offset, err);
+            ActionQueue aq;
+            if (ScanScript(script, acTable, offset, aq, err))
+            {
+                return LazyCalc(aq, ctx, err);
+            }
+
+            return false;
         }
 
         const Variable* GetVariable(const std::string& varName) noexcept
@@ -1480,11 +1411,21 @@ namespace DDL_LEXER
         }
 
     private:
-        bool ScanScript(const StrRef& script, const VarsTable&, 
-            std::size_t offset, std::string& err) const noexcept
+        bool LazyCalc(ActionQueue& aq, void* ctx, std::string& err) const noexcept
         {
-            ActionQueue aq;
-            // aq.reserve(2 * ); // @TODO <----
+            for (ActionQueueEle& ac : aq)
+            {
+                if (! ac.action->Handler(ac.food, ctx, err))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        bool ScanScript(const StrRef& script, const ActionTable& acTable, 
+            std::size_t offset, ActionQueue& aq, std::string& err) const noexcept
+        {
             if (m_internalRoot->Scan(script, offset, aq, err))
             {
                 return script.len == offset;
@@ -1691,24 +1632,23 @@ namespace DDL_LEXER
             // root:         statement_with_endmark + ;
             m_internalRoot = Alloc<SyntaxLoop>("root", statement_with_endmark, 1u, SyntaxLoop::Max);
 
-//
-//           /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//           // Action
-//           Bind(terminator, AllocAction<BuiltinTerminatorAc>()) || Error("BUG: bind 'terminator' action");
-//           Bind(ident, AllocAction<BuiltinIdentAc>())           || Error("BUG: bind 'ident' action");
-//           Bind(head, AllocAction<BuiltinHeadAc>())             || Error("BUG: bind 'head' action");
-//           Bind(var, AllocAction<BuiltinVarAc>())               || Error("BUG: bind 'var' action");
-//           Bind(operand, AllocAction<BuiltinOperandAc>())       || Error("BUG: bind 'operand' action");
-//           Bind(struct_expr, AllocAction<BuiltinStructExprAc>())|| Error("BUG: bind 'struct_expr' action");
-//           Bind(num_dec, AllocAction<BuiltinNumDecAc>())        || Error("BUG: bind 'num_dec' action");
-//           Bind(loop_symbol, AllocAction<BuiltinLoopSymbolAc>())|| Error("BUG: bind 'loop_symbol' action");
-//           Bind(loop_symbol_opt, AllocAction<BuiltinLoopSymbolOptAc>()) || Error("BUG: bind 'loop_symbol_opt' action");
-//           Bind(loop_expr, AllocAction<BuiltinLoopExprAc>())    || Error("BUG: bind 'loop_expr' action");
-//           Bind(seq_expr, AllocAction<BuiltinSeqExprAc>())      || Error("BUG: bind 'seq_expr' action");
-//           Bind(branch_expr_some, AllocAction<BuiltinBranchExprSomeAc>()) || Error("BUG: bind 'branch_expr_some' action");
-//           Bind(expr, AllocAction<BuiltinExprAc>())             || Error("BUG: bind 'expr' action");
-//           Bind(production_statement, AllocAction<BuiltinProductionStatementAc>()) || Error("BUG: bind 'production_statement' action");
-//
+
+            /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+            // Action
+            Bind(terminator, AllocAction<BuiltinTerminatorAc>()) || Error("BUG: bind 'terminator' action");
+            Bind(ident, AllocAction<BuiltinIdentAc>())           || Error("BUG: bind 'ident' action");
+            Bind(head, AllocAction<BuiltinHeadAc>())             || Error("BUG: bind 'head' action");
+            Bind(var, AllocAction<BuiltinVarAc>())               || Error("BUG: bind 'var' action");
+            Bind(operand, AllocAction<BuiltinOperandAc>())       || Error("BUG: bind 'operand' action");
+            Bind(struct_expr, AllocAction<BuiltinStructExprAc>())|| Error("BUG: bind 'struct_expr' action");
+            Bind(num_dec, AllocAction<BuiltinNumDecAc>())        || Error("BUG: bind 'num_dec' action");
+            Bind(loop_symbol, AllocAction<BuiltinLoopSymbolAc>())|| Error("BUG: bind 'loop_symbol' action");
+            Bind(loop_symbol_opt, AllocAction<BuiltinLoopSymbolOptAc>()) || Error("BUG: bind 'loop_symbol_opt' action");
+            Bind(loop_expr, AllocAction<BuiltinLoopExprAc>())    || Error("BUG: bind 'loop_expr' action");
+            Bind(seq_expr, AllocAction<BuiltinSeqExprAc>())      || Error("BUG: bind 'seq_expr' action");
+            Bind(branch_expr_some, AllocAction<BuiltinBranchExprSomeAc>()) || Error("BUG: bind 'branch_expr_some' action");
+            Bind(expr, AllocAction<BuiltinExprAc>())             || Error("BUG: bind 'expr' action");
+            Bind(production_statement, AllocAction<BuiltinProductionStatementAc>()) || Error("BUG: bind 'production_statement' action");
 
             return true;
         } // MakeInteranlSyntax
