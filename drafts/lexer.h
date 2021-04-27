@@ -313,6 +313,11 @@ namespace DDL_LEXER
             return m_action;
         }
 
+        const VariableType& Type() const
+        {
+            return m_type;
+        }
+
     public:
          void _SetName(StrRef name) noexcept
          {
@@ -606,9 +611,10 @@ namespace DDL_LEXER
                 m_type.SetSequence();
             }
 
-            void AppendVariable(Variable* var)
+            SyntaxSequence& AppendVariable(Variable* var)
             {
                 m_sequence.push_back(var);
+                return *this;
             }
 
             bool Scan(const StrRef& script, std::size_t& offset, ActionQueue& actions, std::string& err) noexcept override
@@ -1518,7 +1524,6 @@ namespace DDL_LEXER
             return Alloc<T>(name, token, whites, rightAssert);
         }
 
-
         template <class T, class... Args,
            class = typename std::enable_if<!std::is_base_of<internal::SyntaxToken, T>::value>::type>
         Variable* Alloc(StrRef name, Args&&...args) noexcept
@@ -1580,8 +1585,9 @@ namespace DDL_LEXER
             // terminator    : '.*?'  # 或者正则表达式 
             Variable* terminator = AllocDollarFn<BuiltinTerminator>("terminator", "", whites);
 
-            // operand : terminator | var;
-            Variable* operand = Alloc<SyntaxBranch>("operand", terminator, var); // @TODO 这里应该添加 func_expr, 从而去除 let func expr
+            // operand : terminator | func_expr | var;
+            Variable* func_expr = Alloc<SyntaxSequence>("func_expr"); // decl
+            Variable* operand = Alloc<SyntaxBranch>("operand", terminator, func_expr, var); 
 
             // expr : 优先级 循环 > 序列 > 分支
             Variable* $0x7B = Alloc<SyntaxToken>("{", "{", whites);
@@ -1671,11 +1677,12 @@ namespace DDL_LEXER
             Variable* suffix_args_some = Alloc<SyntaxLoop>("suffix_args_some", suffix_args, 0, SyntaxLoop::Max);
             Variable* func_args = Alloc<SyntaxSequence>("func_args", func_arg, suffix_args_some);
             Variable* func_args_opt = Alloc<SyntaxLoop>("func_args_opt", func_args, 0, 1u);
-            Variable* func_expr = Alloc<SyntaxSequence>("func_expr", func_name, $0x28, func_args_opt, $0x29);
-            Variable* let_func = Alloc<SyntaxSequence>("let_func", let_keyword, head, equal_mark, func_expr);
+            //Variable* func_expr = Alloc<SyntaxSequence>("func_expr", func_name, $0x28, func_args_opt, $0x29);
+            assert(func_expr->Type().IsSequence());
+            ((SyntaxSequence*)func_expr)->AppendVariable(func_name).AppendVariable($0x28).AppendVariable(func_args_opt).AppendVariable($0x29);
 
-            // statement : production_statement | let_statement ;
-            Variable* statement = Alloc<SyntaxBranch>("statement", production_statement, let_func, let_where);
+            // statement : production_statement | let_where ;
+            Variable* statement = Alloc<SyntaxBranch>("statement", production_statement, let_where);
 
             // statement_with_endmark : statement ';'+;
             Variable* statement_with_endmark = Alloc<SyntaxSequence>("statement_with_endmark", statement,
