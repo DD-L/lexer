@@ -1428,12 +1428,18 @@ namespace DDL_LEXER
             return nullptr;
         }
 
+        // 从此接口创建的 Action，对象析构是自动的，而且析构顺序和创建顺序相反
         template <class UserAction, class... Args,
             class = typename std::enable_if<std::is_base_of<Action, UserAction>::value>::type >
-        bool Bind(const std::string& var, Args&&... args) noexcept
+        Action* CreateAction(Args&&... args) noexcept
+        {
+
+        }
+
+        bool Bind(const std::string& var, Action* action) noexcept
         {
             Variable* v = nullptr;
-            // 仅在成功时创建 Action ????, 那公用 Action 怎么办 ？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？
+            // 仅在成功时创建 Action ????, 那共用 Action 怎么办 ？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？
             return Bind(v, action);
         }
 
