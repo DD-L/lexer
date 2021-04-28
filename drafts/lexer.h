@@ -81,26 +81,26 @@ namespace DDL_LEXER
     class VariableType
     {
     public:
-        bool IsNormal() const { return !IsMutable(); }
-        bool IsMutable() const { return 0 != TopBit(); }
-        bool IsLoop() const { return  Classify::_Loop == WipeTop(); }
-        bool IsBranch() const { return Classify::_Branch == WipeTop(); }
-        bool IsSequence() const { return Classify::_Sequence == WipeTop(); }
+        bool IsNormal()     const { return !IsMutable(); }
+        bool IsMutable()    const { return 0 != TopBit(); }
+        bool IsLoop()       const { return  Classify::_Loop == WipeTop(); }
+        bool IsBranch()     const { return Classify::_Branch == WipeTop(); }
+        bool IsSequence()   const { return Classify::_Sequence == WipeTop(); }
         bool IsTerminator() const { return Classify::_Terminator == WipeTop(); }
         bool IsDollarFunc() const { return Classify::_DollarFunc == WipeTop(); }
 
-        void SetNormal() { m_flag = WipeTop(); }
-        void SetMutable() { m_flag |= (~(Classify::classMask)); }
-        void SetLoop() { m_flag = KeepTop() | Classify::_Loop; }
-        void SetBranch() { m_flag = KeepTop() | Classify::_Branch; }
-        void SetSequence() { m_flag = KeepTop() | Classify::_Sequence; }
+        void SetNormal()     { m_flag = WipeTop(); }
+        void SetMutable()    { m_flag |= (~(Classify::classMask)); }
+        void SetLoop()       { m_flag = KeepTop() | Classify::_Loop; }
+        void SetBranch()     { m_flag = KeepTop() | Classify::_Branch; }
+        void SetSequence()   { m_flag = KeepTop() | Classify::_Sequence; }
         void SetTerminator() { m_flag = KeepTop() | Classify::_Terminator; }
         void SetDollarFunc() { m_flag = KeepTop() | Classify::_DollarFunc; }
 
     private:
         uint8_t WipeTop() const { return (m_flag & Classify::classMask); }
         uint8_t KeepTop() const { return  m_flag & (~(Classify::classMask)); }
-        uint8_t TopBit() const { return KeepTop() >> 7; }
+        uint8_t TopBit() const  { return KeepTop() >> 7; }
 
     private:
         enum Classify : uint8_t
@@ -941,6 +941,24 @@ namespace DDL_LEXER
 #define _BULITIN_ACTIONS_DEFINE_BEGIN(class_name) class class_name : public Action { 
 #define _BULITIN_ACTIONS_DEFINE_END(class_name)   }
 
+        _BULITIN_ACTIONS_DEFINE_BEGIN(FunctorAction)
+        public:
+            template <class Handler>
+            explicit FunctorAction(Handler&& handler) : m_handler(std::forward<Handler>(handler)) 
+            {
+                assert(m_handler);
+            }
+
+        protected:
+            bool Handler(const Food& food, void* ctx, std::string& err) override
+            {
+                assert(m_handler);
+                return m_handler(food, ctx, err);
+            }
+
+            std::function<bool(const Food& food, void* ctx, std::string&)> m_handler;
+        _BULITIN_ACTIONS_DEFINE_END(FunctorAction);
+
         template <class Vec>
         static inline void PureVec(Vec& vec) noexcept
         {
@@ -1410,6 +1428,26 @@ namespace DDL_LEXER
             return nullptr;
         }
 
+        template <class UserAction, class... Args,
+            class = typename std::enable_if<std::is_base_of<Action, UserAction>::value>::type >
+        bool Bind(const std::string& var, Args&&... args) noexcept
+        {
+            Variable* v = nullptr;
+            // 仅在成功时创建 Action ????, 那公用 Action 怎么办 ？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？
+            return Bind(v, action);
+        }
+
+        template <class Handler>
+        bool Bind(const std::string& var, Handler&& handler) noexcept
+        {
+            //Action* ac = new internal::FunctorAction(std::forward<Handler>(handler));
+            return 
+            Variable* v = nullptr;
+            // TODO
+            // -----<
+            return Bind(v, action);
+        }
+
     private:
         bool LazyCalc(ActionQueue& aq, void* ctx, std::string& err) const noexcept
         {
@@ -1679,14 +1717,6 @@ namespace DDL_LEXER
                 // var   <- action
                 return false;
             }
-        }
-
-        bool Bind(const std::string& var, Action* action) noexcept
-        {
-            Variable* v = nullptr;
-            // TODO
-            // -----<
-            return Bind(v, action);
         }
 
         static bool Error(StrRef err)
