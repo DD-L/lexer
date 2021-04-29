@@ -193,6 +193,10 @@ namespace DDL_LEXER
     }; // struct ActionQueueEle
 
     typedef std::vector<ActionQueueEle> ActionQueue;
+    typedef std::unordered_map<std::string, Action*> ActionTable;
+
+    class Variable;
+    typedef std::unordered_map<std::string, Variable*>  VariableTable;
 
     // Syntax Variable 
     class Variable
@@ -363,8 +367,7 @@ namespace DDL_LEXER
 
     private:
         std::vector<StrRef> m_holder;
-
-    };
+    }; // MemoryAllocator
 
     namespace
     {
@@ -968,6 +971,12 @@ namespace DDL_LEXER
 
         struct Context
         {
+            Context(VariableTable& varTable, VariableAllocator& varAlloc,
+                MemoryAllocator& memAlloc, ActionTable& acTable)
+                : m_varTable(varTable), m_varAlloc(varAlloc)
+                , m_memAlloc(memAlloc), m_varActionTable(acTable)
+            {}
+
             void ResetStack() noexcept
             {
                 //PureVec(m_stackHead);
@@ -999,10 +1008,10 @@ namespace DDL_LEXER
             std::vector<Variable*>                           m_stackSeqExpr;
             std::vector<std::size_t>                         m_stackBranchExprSome;
 
-            std::unordered_map<std::string, Variable*>&     m_varMap;     
+            VariableTable&                                  m_varTable;
             VariableAllocator&                              m_varAlloc;
             MemoryAllocator&                                m_memAlloc;
-            const std::unordered_map<std::string, Action*>& m_varActionMap;
+            const ActionTable&                              m_varActionTable;
         }; // Context
 
         static inline Context* Ctx(void* ctx) noexcept
@@ -1070,8 +1079,8 @@ namespace DDL_LEXER
             Ctx(ctx)->m_stackIdent.pop_back();
 
             std::string head = headRef.ToStdString();
-            auto found = Ctx(ctx)->m_varMap.find(head);
-            if (Ctx(ctx)->m_varMap.end() == found  || found->second->IsMutable())
+            auto found = Ctx(ctx)->m_varTable.find(head);
+            if (Ctx(ctx)->m_varTable.end() == found  || found->second->IsMutable())
             {
                 Ctx(ctx)->m_stackHead.emplace_back(headRef, std::move(head));
                 return true;
@@ -1091,8 +1100,8 @@ namespace DDL_LEXER
             std::string ident = Ctx(ctx)->m_stackIdent.back().ToStdString();
             Ctx(ctx)->m_stackIdent.pop_back();
 
-            auto found = Ctx(ctx)->m_varMap.find(ident);
-            if (Ctx(ctx)->m_varMap.end() != found)
+            auto found = Ctx(ctx)->m_varTable.find(ident);
+            if (Ctx(ctx)->m_varTable.end() != found)
             {
                 Ctx(ctx)->m_stackVar.push_back(found->second);
             }
@@ -1103,7 +1112,7 @@ namespace DDL_LEXER
                 { // Error
                     return false;
                 }
-                Ctx(ctx)->m_varMap.emplace(ident, mut);
+                Ctx(ctx)->m_varTable.emplace(ident, mut);
             }
 
             return true;
@@ -1339,21 +1348,21 @@ namespace DDL_LEXER
             std::string headData = std::move(_head.strData);
             Ctx(ctx)->m_stackHead.pop_back();
 
-            auto found = Ctx(ctx)->m_varMap.find(headData);
-            if (Ctx(ctx)->m_varMap.end() == found)
+            auto found = Ctx(ctx)->m_varTable.find(headData);
+            if (Ctx(ctx)->m_varTable.end() == found)
             {
                 if (0 != body->_Name().IsNull() && body->GetAction())
                 {// 比如：
                     // ident : $Ident(); # ident 挂了一个 Action
                     // var : ident;      # var 也挂了一个 Action, 那么此时 var 应该是一个 mut_var
-                    auto acFound = Ctx(ctx)->m_varActionMap.find(headData);
-                    if (Ctx(ctx)->m_varActionMap.end() != acFound)
+                    auto acFound = Ctx(ctx)->m_varActionTable.find(headData);
+                    if (Ctx(ctx)->m_varActionTable.end() != acFound)
                     { // head 也挂了一个 Action
                         body = Ctx(ctx)->m_varAlloc.ForceAlloc<MutableVariable>(body); // new body
                         assert(body->IsMutable());
                     }
                 }
-                Ctx(ctx)->m_varMap.emplace(headData, body); // 直接绑定关系 (直接引用)
+                Ctx(ctx)->m_varTable.emplace(headData, body); // 直接绑定关系 (直接引用)
                 body->_SetName(headRef); // head 原始文本
                 return true;
             }
@@ -1385,8 +1394,7 @@ namespace DDL_LEXER
     // class Lexer
     class Lexer final
     {
-    public:
-        typedef std::unordered_map<std::string, Action*> ActionTable;
+        typedef Lexer _Myt;
 
     public:
         Lexer()
@@ -1396,7 +1404,8 @@ namespace DDL_LEXER
 
         ~Lexer() noexcept
         {
-            DestoryInternalActions();
+            DestoryActions(m_userActions);
+            DestoryActions(m_internalActions);
         }
 
         VariableAllocator& GetVariableAllocator()
@@ -1405,53 +1414,58 @@ namespace DDL_LEXER
         }
 
         // 线程无关
-        bool SetGrammar(StrRef script, const ActionTable& acTable, void* ctx, std::string& err) const noexcept
+        bool SetGrammar(StrRef script, std::string& err) const noexcept
         {
             err.clear();
             std::size_t offset = 0;
             ActionQueue aq;
-            if (ScanScript(script, acTable, offset, aq, err))
+            internal::Context ctx(m_userVariablesTable, m_variableAllocator, m_memAllocator, m_userActionTable); // 如果想做到线程无关必须将这几个变量放置在。。。 ！！！！
+            if (ScanScript(script, offset, aq, err))
             {
-                return LazyCalc(aq, ctx, err);
+                return LazyCalc(aq, &ctx, err);
             }
 
             return false;
         }
 
-        const Variable* GetVariable(const std::string& varName) noexcept
+        const Variable* GetVariable(const std::string& varName) const noexcept
         {
-            auto found = m_userVariablesMap.find(varName);
-            if (m_userVariablesMap.end() != found)
-            {
-                return found->second;
-            }
-            return nullptr;
+            return FindVariable(varName);
         }
 
-        // 从此接口创建的 Action，对象析构是自动的，而且析构顺序和创建顺序相反
+        // 销毁由 Alloc1Action() 接口创建的 UserAction
+        void ClearAction() noexcept
+        {
+            DestoryActions(m_userActions);
+        }
+
+        //  该接口用来创建用户自定义的 Action
+        // 从此接口创建的 Action，对象析构是自动的
         template <class UserAction, class... Args,
             class = typename std::enable_if<std::is_base_of<Action, UserAction>::value>::type >
-        Action* CreateAction(Args&&... args) noexcept
+        Action* Alloc1Action(Args&&... args) noexcept
         {
+            return _Myt::AllocAction(m_userActions, std::forward<Args>(args)...);
+        }
 
+        template <class UserAction, class... Args,
+            class = typename std::enable_if<std::is_base_of<Action, UserAction>::value>::type >
+        bool Bind(const std::string& var, Args&&... args) noexcept
+        {
+            return BindImpl(var, []() -> Action* { 
+                return Alloc1Action<UserAction>(std::forward<Args>(args));
+            });
         }
 
         bool Bind(const std::string& var, Action* action) noexcept
         {
-            Variable* v = nullptr;
-            // 仅在成功时创建 Action ????, 那共用 Action 怎么办 ？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？？
-            return Bind(v, action);
+            return BindImpl(var, [action]() -> Action* { return action; });
         }
 
         template <class Handler>
         bool Bind(const std::string& var, Handler&& handler) noexcept
         {
-            //Action* ac = new internal::FunctorAction(std::forward<Handler>(handler));
-            return 
-            Variable* v = nullptr;
-            // TODO
-            // -----<
-            return Bind(v, action);
+            return Bind<internal::FunctorAction>(std::forward<Handler>(handler));
         }
 
     private:
@@ -1467,7 +1481,7 @@ namespace DDL_LEXER
             return true;
         }
 
-        bool ScanScript(const StrRef& script, const ActionTable& acTable, 
+        bool ScanScript(const StrRef& script,
             std::size_t offset, ActionQueue& aq, std::string& err) const noexcept
         {
             if (m_internalRoot->Scan(script, offset, aq, err))
@@ -1478,14 +1492,31 @@ namespace DDL_LEXER
             return false;
         }
 
+
+        Variable* FindVariable(const std::string& varName) const noexcept
+        {
+            auto found = m_userVariablesTable.find(varName);
+            if (m_userVariablesTable.end() != found)
+            {
+                return found->second;
+            }
+            return nullptr;
+        }
+
         template <class MyAction, class...Args>
-        Action* AllocAction(Args&&... args)
+        static Action* Alloc1Action(std::deque<Action*>& actions, Args&&... args)
         {
             static_assert(std::is_base_of<Action, MyAction>::value, "Error");
 
             Action* action = new MyAction(std::forward<Args>(args)...);
-            m_internalActions.push_back(action);
+            actions.push_back(action);
             return action;
+        }
+
+        template <class MyAction, class...Args>
+        Action* AllocInternalAction(Args&&... args)
+        {
+            return Alloc1Action(m_internalActions, std::forward<Args>(args)...);
         }
 
     private:
@@ -1679,23 +1710,36 @@ namespace DDL_LEXER
 
             /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
             // Action
-            Bind(terminator, AllocAction<BuiltinTerminatorAc>()) || Error("BUG: bind 'terminator' action");
-            Bind(ident, AllocAction<BuiltinIdentAc>())           || Error("BUG: bind 'ident' action");
-            Bind(head, AllocAction<BuiltinHeadAc>())             || Error("BUG: bind 'head' action");
-            Bind(var, AllocAction<BuiltinVarAc>())               || Error("BUG: bind 'var' action");
-            Bind(operand, AllocAction<BuiltinOperandAc>())       || Error("BUG: bind 'operand' action");
-            Bind(struct_expr, AllocAction<BuiltinStructExprAc>())|| Error("BUG: bind 'struct_expr' action");
-            Bind(num_dec, AllocAction<BuiltinNumDecAc>())        || Error("BUG: bind 'num_dec' action");
-            Bind(loop_symbol, AllocAction<BuiltinLoopSymbolAc>())|| Error("BUG: bind 'loop_symbol' action");
-            Bind(loop_symbol_opt, AllocAction<BuiltinLoopSymbolOptAc>()) || Error("BUG: bind 'loop_symbol_opt' action");
-            Bind(loop_expr, AllocAction<BuiltinLoopExprAc>())    || Error("BUG: bind 'loop_expr' action");
-            Bind(seq_expr, AllocAction<BuiltinSeqExprAc>())      || Error("BUG: bind 'seq_expr' action");
-            Bind(branch_expr_some, AllocAction<BuiltinBranchExprSomeAc>()) || Error("BUG: bind 'branch_expr_some' action");
-            Bind(expr, AllocAction<BuiltinExprAc>())             || Error("BUG: bind 'expr' action");
-            Bind(production_statement, AllocAction<BuiltinProductionStatementAc>()) || Error("BUG: bind 'production_statement' action");
+            Bind(terminator, AllocInternalAction<BuiltinTerminatorAc>()) || Error("BUG: bind 'terminator' action");
+            Bind(ident, AllocInternalAction<BuiltinIdentAc>())           || Error("BUG: bind 'ident' action");
+            Bind(head, AllocInternalAction<BuiltinHeadAc>())             || Error("BUG: bind 'head' action");
+            Bind(var, AllocInternalAction<BuiltinVarAc>())               || Error("BUG: bind 'var' action");
+            Bind(operand, AllocInternalAction<BuiltinOperandAc>())       || Error("BUG: bind 'operand' action");
+            Bind(struct_expr, AllocInternalAction<BuiltinStructExprAc>())|| Error("BUG: bind 'struct_expr' action");
+            Bind(num_dec, AllocInternalAction<BuiltinNumDecAc>())        || Error("BUG: bind 'num_dec' action");
+            Bind(loop_symbol, AllocInternalAction<BuiltinLoopSymbolAc>())|| Error("BUG: bind 'loop_symbol' action");
+            Bind(loop_symbol_opt, AllocInternalAction<BuiltinLoopSymbolOptAc>()) || Error("BUG: bind 'loop_symbol_opt' action");
+            Bind(loop_expr, AllocInternalAction<BuiltinLoopExprAc>())    || Error("BUG: bind 'loop_expr' action");
+            Bind(seq_expr, AllocInternalAction<BuiltinSeqExprAc>())      || Error("BUG: bind 'seq_expr' action");
+            Bind(branch_expr_some, AllocInternalAction<BuiltinBranchExprSomeAc>()) || Error("BUG: bind 'branch_expr_some' action");
+            Bind(expr, AllocInternalAction<BuiltinExprAc>())             || Error("BUG: bind 'expr' action");
+            Bind(production_statement, AllocInternalAction<BuiltinProductionStatementAc>()) || Error("BUG: bind 'production_statement' action");
 
             return true;
         } // MakeInteranlSyntax
+
+        template <class Handler>
+        bool BindImpl(const std::string& var, Handler&& handler) noexcept
+        {
+            auto found = m_userActionTable.find(var);
+            if (m_userActionTable.end() != found)
+            {
+                m_userActionTable.emplace(var, handler());
+                return true;
+            }
+
+            return false;
+        }
 
         bool Bind(Variable* var, Action* action) noexcept
         {
@@ -1730,21 +1774,23 @@ namespace DDL_LEXER
             throw(err.ToStdString());
         }
 
-        void DestoryInternalActions() noexcept
+        static void DestoryActions(std::deque<Action*>& actions) noexcept
         {
-            for (Action* action : m_internalActions)
+            for (Action* action : actions)
             {
                 delete action;
             }
-            m_internalActions.clear();
+            actions.clear();
         }
 
     private:
         Variable*                                  m_internalRoot;
-        VariableAllocator                          m_variableAllocator;  // 该 Allocator 可能是过度设计，后面要简化这个结构和逻辑！！！！！@TODO
-        std::deque<Action*>                        m_internalActions;    // 内置文法动作集合            
-        std::unordered_map<std::string, Variable*> m_userVariablesMap;   // 输出(1) 
-        //ActionAllocator                            m_actionAllocator;
+        VariableAllocator                          m_variableAllocator;  
+        std::deque<Action*>                        m_internalActions;    // 内置文法动作集合  
+        std::deque<Action*>                        m_userActions;        // 用户文法动作集合 ？？？ 放在 DB 中？？？ TODO
+        ActionTable                                m_userActionTable;    // 用户申请的动作表 ？？？ 放在 DB 中？？？ TODO
+        VariableTable                              m_userVariablesTable;   // 输出(1) 
+        MemoryAllocator                            m_memAllocator;
     }; // class Lexer
 
     //////////////////////////////////////////////
