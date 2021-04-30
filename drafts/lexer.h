@@ -71,6 +71,7 @@ namespace DDL_LEXER
 
         char operator[](std::size_t offset) const noexcept
         {
+            assert(offset < len);
             return *((*this) + offset); // may crash ...
         }
     }; //  StrRef
@@ -856,14 +857,14 @@ namespace DDL_LEXER
 
                     if (Is1To9(script[curOffset]))
                     {
-                        data = data * 10 + (script[curOffset] - '0');
+                        data = data * 10 + ((uint8_t)script[curOffset] - '0');
                         ++curOffset;
 
                         while (curOffset < script.len)
                         {
                             if (Is0To9(script[curOffset]))
                             {
-                                data = data * 10 + (script[curOffset] - '0');
+                                data = data * 10 + ((uint8_t)script[curOffset] - '0');
                                 ++curOffset;
                             }
                             else
@@ -1395,7 +1396,7 @@ namespace DDL_LEXER
     class Lexer final
     {
         typedef Lexer _Myt;
-
+        typedef std::deque<Action*> ActionsHolders;
     public:
         Lexer()
         {
@@ -1414,12 +1415,15 @@ namespace DDL_LEXER
         }
 
         // 线程无关
-        bool SetGrammar(StrRef script, std::string& err) const noexcept
+        bool SetGrammar(StrRef script, std::string& err) noexcept
         {
             err.clear();
+            ResetUserGraph();
+
             std::size_t offset = 0;
             ActionQueue aq;
-            internal::Context ctx(m_userVariablesTable, m_variableAllocator, m_memAllocator, m_userActionTable); // 如果想做到线程无关必须将这几个变量放置在。。。 ！！！！
+            internal::Context ctx(m_userVariablesTable, m_variableAllocator, 
+                m_memAllocator, m_userActionTable); 
             if (ScanScript(script, offset, aq, err))
             {
                 return LazyCalc(aq, &ctx, err);
@@ -1443,17 +1447,17 @@ namespace DDL_LEXER
         // 从此接口创建的 Action，对象析构是自动的
         template <class UserAction, class... Args,
             class = typename std::enable_if<std::is_base_of<Action, UserAction>::value>::type >
-        Action* Alloc1Action(Args&&... args) noexcept
+        Action* AllocAction(Args&&... args) noexcept
         {
-            return _Myt::AllocAction(m_userActions, std::forward<Args>(args)...);
+            return _Myt::AllocAction<UserAction>(m_userActions, std::forward<Args>(args)...);
         }
 
         template <class UserAction, class... Args,
             class = typename std::enable_if<std::is_base_of<Action, UserAction>::value>::type >
         bool Bind(const std::string& var, Args&&... args) noexcept
         {
-            return BindImpl(var, []() -> Action* { 
-                return Alloc1Action<UserAction>(std::forward<Args>(args));
+            return BindImpl(var, [&]() -> Action* { 
+                return AllocAction<UserAction>(std::forward<Args>(args)...);
             });
         }
 
@@ -1465,7 +1469,7 @@ namespace DDL_LEXER
         template <class Handler>
         bool Bind(const std::string& var, Handler&& handler) noexcept
         {
-            return Bind<internal::FunctorAction>(std::forward<Handler>(handler));
+            return Bind<internal::FunctorAction>(var, std::forward<Handler>(handler));
         }
 
     private:
@@ -1503,8 +1507,8 @@ namespace DDL_LEXER
             return nullptr;
         }
 
-        template <class MyAction, class...Args>
-        static Action* Alloc1Action(std::deque<Action*>& actions, Args&&... args)
+        template <class MyAction, class... Args>
+        static Action* AllocAction(ActionsHolders& actions, Args&&... args)
         {
             static_assert(std::is_base_of<Action, MyAction>::value, "Error");
 
@@ -1513,10 +1517,10 @@ namespace DDL_LEXER
             return action;
         }
 
-        template <class MyAction, class...Args>
+        template <class MyAction, class... Args>
         Action* AllocInternalAction(Args&&... args)
         {
-            return Alloc1Action(m_internalActions, std::forward<Args>(args)...);
+            return _Myt::AllocAction<MyAction>(m_internalActions, std::forward<Args>(args)...);
         }
 
     private:
@@ -1724,7 +1728,11 @@ namespace DDL_LEXER
             Bind(branch_expr_some, AllocInternalAction<BuiltinBranchExprSomeAc>()) || Error("BUG: bind 'branch_expr_some' action");
             Bind(expr, AllocInternalAction<BuiltinExprAc>())             || Error("BUG: bind 'expr' action");
             Bind(production_statement, AllocInternalAction<BuiltinProductionStatementAc>()) || Error("BUG: bind 'production_statement' action");
-
+            //  <---------------------  @TODO ------------------------------
+            // production_statement 要注册一个即时消费的 Action 用来记录，head 所指的 名字 -> 实际 Variable 的类型表， 这样就可以 不用前置声明，也不用 mut_var 
+            // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!---------------------------------------------------------!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+            // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!---------------------------------------------------------!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+            // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!---------------------------------------------------------!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
             return true;
         } // MakeInteranlSyntax
 
@@ -1774,7 +1782,7 @@ namespace DDL_LEXER
             throw(err.ToStdString());
         }
 
-        static void DestoryActions(std::deque<Action*>& actions) noexcept
+        static void DestoryActions(ActionsHolders& actions) noexcept
         {
             for (Action* action : actions)
             {
@@ -1783,14 +1791,23 @@ namespace DDL_LEXER
             actions.clear();
         }
 
+        void ResetUserGraph() noexcept
+        {
+            m_userActions.clear();
+            m_userActionTable.clear();
+            m_userVariablesTable.clear();
+        }
+
     private:
-        Variable*                                  m_internalRoot;
-        VariableAllocator                          m_variableAllocator;  
-        std::deque<Action*>                        m_internalActions;    // 内置文法动作集合  
-        std::deque<Action*>                        m_userActions;        // 用户文法动作集合 ？？？ 放在 DB 中？？？ TODO
-        ActionTable                                m_userActionTable;    // 用户申请的动作表 ？？？ 放在 DB 中？？？ TODO
-        VariableTable                              m_userVariablesTable;   // 输出(1) 
-        MemoryAllocator                            m_memAllocator;
+        Variable*              m_internalRoot;
+        VariableAllocator      m_variableAllocator;  
+        ActionsHolders         m_internalActions;      // 内置文法动作集合
+
+        // 以下是 DB
+        ActionsHolders         m_userActions;          // 用户文法动作集合 
+        ActionTable            m_userActionTable;      // 用户申请的动作表 
+        VariableTable          m_userVariablesTable;   // 输出(1) 
+        MemoryAllocator        m_memAllocator;
     }; // class Lexer
 
     //////////////////////////////////////////////
