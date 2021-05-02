@@ -9,6 +9,7 @@
 #include <cstring>
 #include <utility>
 #include <unordered_map>
+#include <unordered_set>
 #include <functional>
 #include <vector>
 #include <string>
@@ -25,53 +26,74 @@ namespace DDL_LEXER
    
     struct StrRef
     {
-        const char* str = nullptr;
-        std::size_t len = 0;
+        const char* m_begin = nullptr;
+        const char* m_end = nullptr;
 
     public:
         constexpr StrRef() = default;
 
         constexpr StrRef(const char* _str, std::size_t _len)
-            : str(_str), len(_len)
+            : m_begin(_str), m_end(_str + _len)
         {}
 
         template <class Iter>
         constexpr StrRef(Iter&& begin, Iter&& end)
-            : str(&*begin), len((std::size_t)(end - begin))
+            : m_begin(&*begin), m_end(&*end)
         {
             assert(begin <= end);
         }
 
         template <std::size_t N>
         constexpr StrRef(const char (&arr)[N] )
-            : str(arr), len(N - 1)
+            : m_begin(arr), m_end(arr + N - 1u)
         {
             static_assert(0 != N, "Error");
         }
 
         constexpr StrRef(const StrRef& strRef) noexcept
-            : str(strRef.str), len(strRef.len)
+            : m_begin(strRef.m_begin), m_end(strRef.m_end)
         {}
+
+        /*explicit*/ StrRef(const std::string& stdstr) noexcept
+            : m_begin(stdstr.data()), m_end(stdstr.data() + stdstr.size())
+        {}
+
+        template <class T, 
+            class = typename std::enable_if<
+             std::is_same<T, int8_t>::value || std::is_same<T, uint8_t>::value>::type>
+        /*explicit*/ StrRef(const std::vector<T>& stdvec) noexcept
+            : m_begin((char*)stdvec.data()), m_end((char*)stdvec.data() + stdvec.size())
+        {}
+
+        // For Range
+        const char* begin() const { return m_begin; }
+        const char* end()   const { return m_end; }
 
         bool IsNull() const
         {
-            assert((nullptr == str) ? (0 == len) : true);
-            return nullptr == str;
+            assert((nullptr == m_begin) ? (0 == m_end) : true);
+            return nullptr == m_begin;
+        }
+
+        std::size_t Length() const
+        {
+            assert(m_begin <= m_end);
+            return m_end - m_begin;
         }
 
         std::string ToStdString() const
         {
-            return std::string(str, len);
+            return std::string(m_begin, m_end);
         }
 
         const char* operator+(std::size_t offset) const noexcept
         {
-            return offset < len ? str + offset : nullptr;
+            return offset <= Length() ? (m_begin + offset) : nullptr;
         }
 
         char operator[](std::size_t offset) const noexcept
         {
-            assert(offset < len);
+            assert(offset < Length());
             return *((*this) + offset); // may crash ...
         }
     }; //  StrRef
@@ -119,25 +141,18 @@ namespace DDL_LEXER
     public:
         ~Food() {}
         Food() = default;
-        Food(const char* begin, const char* end, 
-            VariableType type, std::size_t constraint, uint64_t ctxInt)
-            : m_begin(begin), m_end(end), 
-            m_constraint(constraint), m_ctxInt(ctxInt), m_type(type)
+        Food(StrRef str, const DDL_LEXER::VariableType& type, 
+            std::size_t constraint, uint64_t ctxInt)
+            : m_str(str), m_constraint(constraint), m_ctxInt(ctxInt), m_type(type)
         {
-            assert(begin <= end);
         }
 
     public:
         void* Data() const { return m_data; }
-        const char* Begin() const { return m_begin; }
-        const char* End() const { return m_end; }
-        StrRef ToStrRef() const { return { Begin(), End() }; }
-
-        std::size_t Length() const
-        {
-            assert(Begin() <= End());
-            return End() - Begin();
-        }
+        const StrRef& Str() const { return m_str; }
+        const char* Begin() const { return Str().begin(); }
+        const char* End() const { return Str().end(); }
+        std::size_t Length() const { return Str().Length(); }
         
         std::size_t BranchID() const
         {
@@ -151,14 +166,18 @@ namespace DDL_LEXER
             return m_loopCnt;
         }
 
+        const DDL_LEXER::VariableType& VariableType() const
+        {
+            return m_type;
+        }
+
         static uint64_t AsInt(void* data) noexcept 
         { 
             return reinterpret_cast<uint64_t>(data); 
         }
 
     protected:
-        const char* m_begin = nullptr;
-        const char* m_end   = nullptr;
+        StrRef  m_str;
 
         union
         {
@@ -174,7 +193,7 @@ namespace DDL_LEXER
             void*    m_data;
         };
 
-        VariableType    m_type;
+        const DDL_LEXER::VariableType  m_type;
     }; // class Food
 
     class Action
@@ -182,6 +201,7 @@ namespace DDL_LEXER
     public:
         virtual ~Action() {}
         virtual bool Handler(const Food& food, void* ctx, std::string&) = 0;
+        virtual bool RealTimeHandler(const Food& food, void* ctx, std::string& err) noexcept { return true; }
     }; // class Action
 
     struct ActionQueueEle
@@ -214,7 +234,7 @@ namespace DDL_LEXER
         }
 
         virtual bool Scan(const StrRef& script, std::size_t& offset,
-            ActionQueue& actions, std::string& err) noexcept = 0;
+            ActionQueue& actions, void*, std::string& err) noexcept = 0;
         //{
         //    (void)script; (void)offset; (void)actions, (void)err;
         //    return true; // 空串
@@ -259,14 +279,23 @@ namespace DDL_LEXER
          }
 
     protected:
-         void PushAction(ActionQueue& actions, const StrRef& script,
-             std::size_t start, std::size_t curr, std::size_t constraint, uint64_t data) const noexcept
+         bool PushAction(ActionQueue& actions, const StrRef& script,
+             std::size_t start, std::size_t curr, 
+             std::size_t constraint, uint64_t data,
+             void* ctx, std::string& err) const noexcept
          {
              if (m_action)
              {
-                 actions.emplace_back(m_action, 
-                     Food(script + start, script + curr, m_type, constraint, data));
+                 Food food({ script + start, script + curr }, m_type, constraint, data);
+                 if (m_action->RealTimeHandler(food, ctx, err))
+                 { // “actions，data”和 “ctx” 适用范围不同， 不能将其 代入到 ctx 中
+                     actions.emplace_back(m_action, std::move(food));
+                     return true;
+                 }
+                 return false;
              }
+
+             return true;
          }
 
          static Variable*& ThreadLocalDummyVariable() noexcept
@@ -361,7 +390,7 @@ namespace DDL_LEXER
         {
             for (StrRef& ele : m_holder)
             {
-                delete[] ele.str;
+                delete[] ele.begin();
             }
             m_holder.clear();
         }
@@ -390,17 +419,17 @@ namespace DDL_LEXER
                 Set(mut);
             }
 
-            bool Scan(const StrRef& script, std::size_t& offset, ActionQueue& actions, std::string& err) noexcept override
+            bool Scan(const StrRef& script, std::size_t& offset, 
+                ActionQueue& actions, void* ctx, std::string& err) noexcept override
             {
                 // 确保其他 Variable 衍生对象可以安全的重塑为 mut_var
                 static_assert(sizeof(MutableVariable) == sizeof(Variable), "Error"); 
 
                 assert(Valid());
                 const std::size_t start = offset;
-                if (m_mut->Scan(script, offset, actions, err))
+                if (m_mut->Scan(script, offset, actions, ctx, err))
                 {
-                    PushAction(actions, script, start, offset, 0, 0);
-                    return true;
+                    return PushAction(actions, script, start, offset, 0, 0, ctx, err);
                 }
 
                 return false;
@@ -436,7 +465,7 @@ namespace DDL_LEXER
 
                     std::string e;
                     ActionQueue aq;
-                    whites->Scan(m_token, offset, aq, e); (void)aq, (void)e;
+                    whites->Scan(m_token, offset, aq, nullptr, e); (void)aq, (void)e;
                 }
 
                 m_leftWhites = whites;
@@ -449,14 +478,14 @@ namespace DDL_LEXER
                 return true;
             }
 
-            virtual bool Scan(const StrRef& script, std::size_t& offset, ActionQueue& actions, std::string& err) noexcept
+            virtual bool Scan(const StrRef& script, std::size_t& offset, ActionQueue& actions, void* ctx, std::string& err) noexcept
             {
                 std::size_t oldOffset = offset;
                 if (m_leftWhites)
-                {
+                { // white 不允许产生副作用，所以 context 必须为 空
                     std::string e;
                     ActionQueue aq;
-                    m_leftWhites->Scan(script, offset, aq, e); (void)aq, (void)e;
+                    m_leftWhites->Scan(script, offset, aq, nullptr, e); (void)aq, (void)e;
                 }
 
                 uint64_t data = 0;
@@ -465,18 +494,16 @@ namespace DDL_LEXER
                 {
                     if (nullptr == m_rightAssert)
                     {
-                        PushAction(actions, script, start, offset, 0, data);
-                        return true;
+                        return PushAction(actions, script, start, offset, 0, data, ctx, err);
                     }
-                    // 对 Token 右边界的零宽断言
+                    // 对 Token 右边界的零宽断言，右边界不允许产生副作用，所以 context 必须为 空
                     std::size_t constOffset = offset;
                     std::string e; 
                     ActionQueue aq;
-                    (void)(constOffset); (void)(e); (void)aq;
-                    if (m_rightAssert->Scan(script, constOffset, aq, e))
-                    {
-                        PushAction(actions, script, start, offset, 0, data); 
-                        return true;
+                    (void)(constOffset); (void)(e); (void)aq; 
+                    if (m_rightAssert->Scan(script, constOffset, aq, nullptr, e))
+                    { 
+                        return PushAction(actions, script, start, offset, 0, data, ctx, err); 
                     }
                 }
                 offset = oldOffset; // 恢复前面白字符的消耗 ？？ @TODO 有必要 ？？？？
@@ -485,11 +512,11 @@ namespace DDL_LEXER
         
             virtual bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t& data, std::string& err) noexcept
             {
-                if ((offset + m_token.len) <= script.len)
+                if ((offset + m_token.Length()) <= script.Length())
                 {
-                    if (0 == std::memcmp(script + offset, m_token.str, m_token.len))
+                    if (0 == std::memcmp(script + offset, m_token.begin(), m_token.Length()))
                     {
-                        offset += m_token.len;
+                        offset += m_token.Length();
                         return true;
                     }
                 }
@@ -539,13 +566,13 @@ namespace DDL_LEXER
                 return *this;
             }
 
-            bool Scan(const StrRef& script, std::size_t& offset, ActionQueue& actions, std::string& err) noexcept override
+            bool Scan(const StrRef& script, std::size_t& offset, ActionQueue& actions, void* ctx, std::string& err) noexcept override
             {
                 const std::size_t start = offset;
                 std::size_t cnt = 0;
                 for (Variable* v : m_sequence)
                 {
-                    if (!v->Scan(script, offset, actions, err))
+                    if (!v->Scan(script, offset, actions, ctx, err))
                     {
                         offset = start;
                         return false;
@@ -555,8 +582,7 @@ namespace DDL_LEXER
 
                 if (m_sequence.size() == cnt)
                 {
-                    PushAction(actions, script, start, offset, m_sequence.size(), 0);
-                    return true;
+                    return PushAction(actions, script, start, offset, m_sequence.size(), 0, ctx, err);
                 }
 
                 offset = start;
@@ -603,7 +629,7 @@ namespace DDL_LEXER
                 m_branches.push_back(var);
             }
 
-            bool Scan(const StrRef& script, std::size_t& offset, ActionQueue& actions, std::string& err) noexcept override
+            bool Scan(const StrRef& script, std::size_t& offset, ActionQueue& actions, void* ctx, std::string& err) noexcept override
             {
                 for (std::size_t index = 0; index < m_branches.size(); ++index)
                 {
@@ -611,10 +637,9 @@ namespace DDL_LEXER
                     std::size_t start = offset;
 
                     Variable* v = m_branches[index];
-                    if (v->Scan(script, offset, actions, err))
+                    if (v->Scan(script, offset, actions, ctx, err))
                     {
-                        PushAction(actions, script, start, offset, index, 0);
-                        return true;
+                        return PushAction(actions, script, start, offset, index, 0, ctx, err);
                     }
                     else
                     {
@@ -651,14 +676,14 @@ namespace DDL_LEXER
                 m_type.SetLoop();
             }
 
-            bool Scan(const StrRef& script, std::size_t& offset, ActionQueue& actions, std::string& err) noexcept override
+            bool Scan(const StrRef& script, std::size_t& offset, ActionQueue& actions, void* ctx, std::string& err) noexcept override
             {
                 std::size_t oldOffset = offset;
                 const std::size_t start = offset;
                 std::size_t cnt = 0;
                 for (std::size_t i = 0; i < m_min; ++i, ++cnt)
                 { // 最少循环 m_min 次
-                    if (!m_var->Scan(script, offset, actions, err))
+                    if (!m_var->Scan(script, offset, actions, ctx, err))
                     {
                         offset = oldOffset;
                         return false;
@@ -668,7 +693,7 @@ namespace DDL_LEXER
                 for (std::size_t i = m_min; i < m_max; ++i, ++cnt)
                 {
                     oldOffset = offset;
-                    if (! m_var->Scan(script, offset, actions, err))
+                    if (! m_var->Scan(script, offset, actions, ctx, err))
                     {
                         offset = oldOffset;
                         break;
@@ -677,8 +702,7 @@ namespace DDL_LEXER
 
                 if ((m_min <= cnt) && (cnt <= m_max))
                 {
-                    PushAction(actions, script, start, offset, cnt, 0);
-                    return true;
+                    return PushAction(actions, script, start, offset, cnt, 0, ctx, err);
                 }
                 return false;
             }
@@ -706,11 +730,9 @@ namespace DDL_LEXER
 
         private:
             bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t&, std::string& err) noexcept override
-            {
-                // [_a-z-A-Z][_0-9a-zA-Z]*
-                // 最小要求是一个字符
+            { // [_a-z-A-Z][_0-9a-zA-Z]*// 最小要求是一个字符
                 std::size_t curOffset = offset;
-                if (curOffset >= script.len)
+                if (curOffset >= script.Length())
                 {
                     err = _Name().ToStdString() + ": atleast one bytes.....";
                     return false;
@@ -725,7 +747,7 @@ namespace DDL_LEXER
                     return false;
                 }
 
-                for (; curOffset < script.len; ++curOffset)
+                for (; curOffset < script.Length(); ++curOffset)
                 {
                     const char ch = script[curOffset];
                     if (!('_' == ch
@@ -746,9 +768,9 @@ namespace DDL_LEXER
 
         class BuiltinWhite : public Variable
         {
-            bool Scan(const StrRef& script, std::size_t& offset, ActionQueue&, std::string& err) noexcept override
+            bool Scan(const StrRef& script, std::size_t& offset, ActionQueue&, void*, std::string& err) noexcept override
             {
-                if (offset < script.len && IsWhite(script[offset]))
+                if (offset < script.Length() && IsWhite(script[offset]))
                 {
                     ++offset;
                     return true;
@@ -773,39 +795,35 @@ namespace DDL_LEXER
         class BuildinComment : public Variable
         { // 注释, 目前仅支持 #.*?(\n|$)
         public:
-            bool Scan(const StrRef& script, std::size_t& offset, ActionQueue&, std::string&) noexcept override
+            bool Scan(const StrRef& script, std::size_t& offset, ActionQueue&, void*, std::string&) noexcept override
             {
-                if (offset < script.len)
+                if (offset < script.Length() && ('#' == script[offset]))
                 {
-                    if ('#' == script[offset])
-                    {
-                        ++offset;
-                        while (offset < script.len)
-                        {
-                            if ('\n' == script[offset])
-                            {
-                                ++offset;
-                                return true;
-                            }
-                            ++offset;
-                        }
-
-                        return true;
-                    }
+                     ++offset;
+                     while (offset < script.Length())
+                     {
+                         if ('\n' == script[offset])
+                         {
+                             ++offset;
+                             return true;
+                         }
+                         ++offset;
+                     }
+                     
+                     return true;
                 }
                 return false;
             }
         }; // class BuildinComment
 
-        class BuiltinPunct : public Variable
+        class BuiltinPunct : public SyntaxToken
         { // ispunct : !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~ 
-            bool Scan(const StrRef& script, std::size_t& offset, ActionQueue&, std::string& err) noexcept override
+            bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t&, std::string&) noexcept override
             {
-                if (offset < script.len)
+                if (offset < script.Length())
                 {
                     return IsPunct(script[offset]);
                 }
-
                 return false;
             }
         public:
@@ -816,17 +834,17 @@ namespace DDL_LEXER
         }; // class BuiltinPunct
 
         class BuiltinTokenRightZeroWidthAssertion : public Variable
-        { // Token 右边界的零宽断言
+        { // Token 右边界的零宽断言, 不会产生任何副作用
             // $|\s|[\x21–\x2F\x3A–\x40\x5B–\x60\x7B–\x7E]
-            bool Scan(const StrRef& script, std::size_t& offset, ActionQueue&, std::string& err) noexcept override
+            bool Scan(const StrRef& script, std::size_t& offset, ActionQueue&, void*, std::string& err) noexcept override
             {
                 const std::size_t _offset = offset; // 不消耗字符
-                if (_offset == script.len)
+                if (_offset == script.Length())
                 {
                     return true;
                 }
 
-                if (_offset < script.len)
+                if (_offset < script.Length())
                 {
                     char c = script[_offset];
                     return BuiltinWhite::IsWhite(c) || BuiltinPunct::IsPunct(c);
@@ -844,7 +862,7 @@ namespace DDL_LEXER
             bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t& data, std::string& err) noexcept override
             { // 十进制自然数
                 std::size_t curOffset = offset;
-                if (curOffset < script.len)
+                if (curOffset < script.Length())
                 {
                     data = 0;
 
@@ -857,14 +875,14 @@ namespace DDL_LEXER
 
                     if (Is1To9(script[curOffset]))
                     {
-                        data = data * 10 + ((uint8_t)script[curOffset] - '0');
+                        data = data * 10u + ((uint8_t)script[curOffset] - (uint8_t)'0');
                         ++curOffset;
 
-                        while (curOffset < script.len)
+                        while (curOffset < script.Length())
                         {
                             if (Is0To9(script[curOffset]))
                             {
-                                data = data * 10 + ((uint8_t)script[curOffset] - '0');
+                                data = data * 10u + ((uint8_t)script[curOffset] - (uint8_t)'0');
                                 ++curOffset;
                             }
                             else
@@ -897,12 +915,12 @@ namespace DDL_LEXER
                 // 2. 双引号：      暂不实现
                 // 3. 正则表达式：  /.../ 支持空串
                 std::size_t curOffset = offset;
-                if (curOffset < script.len)
+                if (curOffset < script.Length())
                 {
                     if ('\'' == script[curOffset])
                     {
                         ++curOffset;
-                        while (curOffset < script.len)
+                        while (curOffset < script.Length())
                         {
                             if ('\'' == script[curOffset++])
                             {
@@ -914,7 +932,7 @@ namespace DDL_LEXER
                     else if ('/' == script[curOffset])
                     { // 正则表达式， 不能出现不打印字符
                         ++curOffset;
-                        while (curOffset < script.len)
+                        while (curOffset < script.Length())
                         {
                             if (! std::isprint((uint8_t)(script[curOffset])))
                             {
@@ -931,7 +949,7 @@ namespace DDL_LEXER
                                 offset = curOffset;
                                 return true;
                             }
-                        } // end while (curOffset < script.len)
+                        } // end while (curOffset < script.Length())
                     } // end if '/'
                 }
                 return false;
@@ -972,9 +990,9 @@ namespace DDL_LEXER
 
         struct Context
         {
-            Context(VariableTable& varTable, VariableAllocator& varAlloc,
+            Context(Variable*& userRootRef, VariableTable& varTable, VariableAllocator& varAlloc,
                 MemoryAllocator& memAlloc, ActionTable& acTable)
-                : m_varTable(varTable), m_varAlloc(varAlloc)
+                : m_userRootRef(userRootRef), m_varTable(varTable), m_varAlloc(varAlloc)
                 , m_memAlloc(memAlloc), m_varActionTable(acTable)
             {}
 
@@ -995,20 +1013,30 @@ namespace DDL_LEXER
                 HeadEle(const StrRef& r, std::string&& s) : rawRef(r), strData(std::move(s)) {}
             }; // struct HeadEle
 
-            std::vector<SyntaxToken*>                        m_stackTerminator;
-            std::vector<StrRef>                              m_stackIdent;
-            std::vector<HeadEle>                             m_stackHead;
-            std::vector<Variable*>                           m_stackVar;
-            std::vector<Variable*>                           m_stackOperand;
-            std::vector<Variable*>                           m_stackStructExpr;
-            std::vector<Variable*>                           m_stackExpr;
-            std::vector<uint64_t>                            m_stackNumDec;
-            std::vector<std::pair<std::size_t, std::size_t>> m_stackLoopSymbol;
-            std::vector<std::size_t>                         m_stackLoopSymbolOpt;
-            std::vector<Variable*>                           m_stackLoopExpr;
-            std::vector<Variable*>                           m_stackSeqExpr;
-            std::vector<std::size_t>                         m_stackBranchExprSome;
+            // LazyCtx
+            std::vector<SyntaxToken*>                         m_stackTerminator;
+            std::vector<StrRef>                               m_stackIdent;
+            std::vector<HeadEle>                              m_stackHead;
+            std::vector<Variable*>                            m_stackVar;
+            std::vector<Variable*>                            m_stackOperand;
+            std::vector<Variable*>                            m_stackStructExpr;
+            std::vector<Variable*>                            m_stackExpr;
+            std::vector<uint64_t>                             m_stackNumDec;
+            std::vector<std::pair<std::size_t, std::size_t>>  m_stackLoopSymbol;
+            std::vector<std::size_t>                          m_stackLoopSymbolOpt;
+            std::vector<Variable*>                            m_stackLoopExpr;
+            std::vector<Variable*>                            m_stackSeqExpr;
+            std::vector<std::size_t>                          m_stackBranchExprSome;
 
+            // RealtimeStx
+            StrRef                                            m_realtimeIdent;
+            std::unordered_set<std::string>                   m_realtimeHead;
+
+            // Temp
+            std::unordered_map<std::string, SyntaxToken*>   m_tokenTable; // 对 Token(字面值) 去重
+            
+            // 
+            Variable*&                                      m_userRootRef;
             VariableTable&                                  m_varTable;
             VariableAllocator&                              m_varAlloc;
             MemoryAllocator&                                m_memAlloc;
@@ -1021,48 +1049,68 @@ namespace DDL_LEXER
             return static_cast<Context*>(ctx);
         }
 
-        /// <summary>
-        ///  BuiltinTerminatorAc
-        /// </summary>
+        // BuiltinTerminatorAc
         _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinTerminatorAc)
         bool Handler(const Food& food, void* ctx, std::string&) override
         { // Terminator 分三种： ''_   ""_  //_
             assert(food.Length() >= 2u);
-            switch (*(food.Begin()))
+            SyntaxToken* token = nullptr;
+            switch (food.Str()[0])
             {
-            case '\'':
+            case '\'': // 注意这里可能会存在 后缀！！！!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
                 {
-                    // 注意这里可能会存在 后缀！！！!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-                    SyntaxToken* token = Ctx(ctx)->m_varAlloc.ForceAlloc<SyntaxToken>(StrRef(food.Begin() + 1, food.End() - 1));
-                    Ctx(ctx)->m_stackTerminator.push_back(token); // 没有名字
+                    StrRef content(food.Begin() + 1, food.End() - 1);
+                    token = GetToken(content.ToStdString(), content, ctx);
                 }
                 break;
-            case '"':
-                {
-                    // @TODO ！！！ 注意这里要转义 ，而且还有后缀问题 ！！！！！！！！！！！！！！！！！！！！！！！！！！！！！
-                    std::vector<char> aa(food.Begin() + 1, food.End() - 1);
-                    char* buf = Ctx(ctx)->m_memAlloc.Alloc(aa.size()); 
-                    std::memmove(buf, aa.data(), aa.size());
-                    
-                    SyntaxToken* token = Ctx(ctx)->m_varAlloc.ForceAlloc<SyntaxToken>(StrRef(buf, aa.size()));
-                    Ctx(ctx)->m_stackTerminator.push_back(token); // 没有名字
+            case '"': // @TODO ！！！ 注意这里要转义 ，而且还有后缀问题 ！！！！！！！！！！！！！！！！！！！！！！！！！！！！！
+                { 
+                    StrRef content(food.Begin() + 1, food.End() - 1);
+                    std::string realContent = content.ToStdString(); // <-- 转义在这里完成
+
+                    char* buf = Ctx(ctx)->m_memAlloc.Alloc(realContent.size());
+                    std::memmove(buf, realContent.data(), realContent.size());
+                    StrRef holder(buf, realContent.size());
+                    token = GetToken(realContent, holder, ctx);
                 }
                 break;
-            case '/':
+            case '/': // 正则表达式
                 // @TODO 这里也有后缀问题！！！！
 
                 break;
             default:
                 return false;  // Error LogicBug
             }
+
+            Ctx(ctx)->m_stackTerminator.push_back(token); // 没有名字
             return true;
+        }
+
+        SyntaxToken* GetToken(const std::string& realContent, const StrRef& holder, void* ctx) noexcept
+        {
+            SyntaxToken* token = nullptr;
+            auto found = Ctx(ctx)->m_tokenTable.find(realContent); // 优先在缓存中寻找
+            if (Ctx(ctx)->m_tokenTable.end() == found)
+            {
+                token = Ctx(ctx)->m_varAlloc.ForceAlloc<SyntaxToken>(holder);
+                Ctx(ctx)->m_tokenTable.emplace(realContent, token);
+            }
+            else
+            {
+                token = found->second;
+            }
+            assert(token);
+            return token;
         }
         _BULITIN_ACTIONS_DEFINE_END(BuiltinTerminatorAc);
 
-        /// <summary>
-        ///   BuiltinIdentAc
-        /// </summary>
+        // BuiltinIdentAc
         _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinIdentAc)
+        bool RealTimeHandler(const Food& food, void* ctx, std::string& err) noexcept override
+        { // 实时回调接口
+            Ctx(ctx)->m_realtimeIdent = food.Str(); // 覆盖即可
+            return true;
+        }
         bool Handler(const Food& food, void* ctx, std::string&) override
         {
             Ctx(ctx)->m_stackIdent.emplace_back(food.Begin(), food.End()); // StrRef 类型
@@ -1070,10 +1118,15 @@ namespace DDL_LEXER
         }
         _BULITIN_ACTIONS_DEFINE_END(BuiltinIdentAc);
         
-        /// <summary>
         ///  BuiltinHeadAc
-        /// </summary>
         _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinHeadAc)
+        bool RealTimeHandler(const Food& food, void* ctx, std::string& err) noexcept override
+        { // 实时回调接口
+            const StrRef& ident = Ctx(ctx)->m_realtimeIdent;
+            Ctx(ctx)->m_realtimeHead.emplace(ident.ToStdString()); // 覆盖失败的即可
+            return true;
+        }
+
         bool Handler(const Food&, void* ctx, std::string& err) noexcept override
         {
             StrRef headRef = Ctx(ctx)->m_stackIdent.back();
@@ -1092,9 +1145,7 @@ namespace DDL_LEXER
         }
         _BULITIN_ACTIONS_DEFINE_END(BuiltinHeadAc);
         
-        /// <summary>
         /// BuiltinVarAc
-        /// </summary>
         _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinVarAc)
         bool Handler(const Food& food, void* ctx, std::string&) noexcept override
         {
@@ -1102,12 +1153,8 @@ namespace DDL_LEXER
             Ctx(ctx)->m_stackIdent.pop_back();
 
             auto found = Ctx(ctx)->m_varTable.find(ident);
-            if (Ctx(ctx)->m_varTable.end() != found)
-            {
-                Ctx(ctx)->m_stackVar.push_back(found->second);
-            }
-            else
-            { // 当前变量表还不存在， 先创建一个 mut_var
+            if (Ctx(ctx)->m_varTable.end() == found)
+            {// 当前变量表还不存在， 先创建一个 mut_var
                 Variable* mut = Ctx(ctx)->m_varAlloc.ForceAlloc<MutableVariable>();
                 if (nullptr == mut)
                 { // Error
@@ -1115,14 +1162,12 @@ namespace DDL_LEXER
                 }
                 Ctx(ctx)->m_varTable.emplace(ident, mut);
             }
-
+            Ctx(ctx)->m_stackVar.push_back(found->second);
             return true;
         }
         _BULITIN_ACTIONS_DEFINE_END(BuiltinVarAc);
 
-        /// <summary>
         ///  BuiltinOperandAc
-        /// </summary>
         _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinOperandAc)
         bool Handler(const Food& food, void* ctx, std::string&) noexcept override
         { // terminator | func_expr | var
@@ -1145,13 +1190,10 @@ namespace DDL_LEXER
             default:
                 return false;
             }
-
         }
         _BULITIN_ACTIONS_DEFINE_END(BuiltinOperandAc);
 
-        /// <summary>
         ///  BuiltinStructExprAc
-        /// </summary>
         _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinStructExprAc);
         bool Handler(const Food& food, void* ctx, std::string&) noexcept override
         { // operand | struct_with_bracket 
@@ -1171,9 +1213,7 @@ namespace DDL_LEXER
         }
         _BULITIN_ACTIONS_DEFINE_END(BuiltinStructExprAc);
 
-        /// <summary>
         ///  BuiltinNumDecAc
-        /// </summary>
         _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinNumDecAc)
         bool Handler(const Food& food, void* ctx, std::string&) noexcept override
         { // 这里面的 Num 只支持 u64 类型 最大值 0xFFFFFFFFFFFFFFFF = 18446744073709551615
@@ -1191,9 +1231,7 @@ namespace DDL_LEXER
         }
         _BULITIN_ACTIONS_DEFINE_END(BuiltinNumDecAc);
 
-        /// <summary>
         ///   BuiltinLoopSymbolAc
-        /// </summary>
         _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinLoopSymbolAc)
         bool Handler(const Food& food, void* ctx, std::string& err) noexcept override
         { // '?' | '*' | "+" | loop_n | loop_m_n | loop_m_max ;
@@ -1244,9 +1282,7 @@ namespace DDL_LEXER
         }
         _BULITIN_ACTIONS_DEFINE_END(BuiltinLoopSymbolAc);
 
-        /// <summary>
         ///  BuiltinLoopSymbolOptAc
-        /// </summary>
         _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinLoopSymbolOptAc)
         bool Handler(const Food& food, void* ctx, std::string&) noexcept override
         {
@@ -1255,9 +1291,7 @@ namespace DDL_LEXER
         }
         _BULITIN_ACTIONS_DEFINE_END(BuiltinLoopSymbolOptAc);
 
-        /// <summary>
         ///  BuiltinLoopExprAc
-        /// </summary>
         _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinLoopExprAc)
         bool Handler(const Food& food, void* ctx, std::string&) noexcept override
         {
@@ -1287,9 +1321,7 @@ namespace DDL_LEXER
         }
         _BULITIN_ACTIONS_DEFINE_END(BuiltinLoopExprAc);
 
-        /// <summary>
         ///  BuiltinSeqExprAc
-        /// </summary>
         _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinSeqExprAc)
         bool Handler(const Food& food, void* ctx, std::string&) noexcept override
         {
@@ -1298,15 +1330,14 @@ namespace DDL_LEXER
             auto begin = Ctx(ctx)->m_stackLoopExpr.end() - seqEleCnt;
             auto end   = Ctx(ctx)->m_stackLoopExpr.end();
 
+            assert(0 != seqEleCnt); // Necessary ? 
             SyntaxSequence* seqExpr = Ctx(ctx)->m_varAlloc.ForceAlloc<SyntaxSequence>(_range_arg, begin, end);
             Ctx(ctx)->m_stackSeqExpr.push_back(seqExpr);
             return true;
         }
         _BULITIN_ACTIONS_DEFINE_END(BuiltinSeqExprAc);
 
-        /// <summary>
         ///  BuiltinBranchExprSomeAc
-        /// </summary>
         _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinBranchExprSomeAc)
         bool Handler(const Food& food, void* ctx, std::string&) noexcept override
         {
@@ -1315,10 +1346,8 @@ namespace DDL_LEXER
         }
         _BULITIN_ACTIONS_DEFINE_END(BuiltinBranchExprSomeAc);
 
-        /// <summary>
         ///  BuiltinBranchPairsAc = BuiltinExprAc  
         ///    expr : branch_paris;
-        /// </summary>
         _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinExprAc)
         bool Handler(const Food& food, void* ctx, std::string&) noexcept override
         {
@@ -1335,9 +1364,7 @@ namespace DDL_LEXER
         }
         _BULITIN_ACTIONS_DEFINE_END(BuiltinExprAc);
 
-        /// <summary>
         ///  BuiltinProductionStatementAc
-        /// </summary>
         _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinProductionStatementAc)
         bool Handler(const Food& food, void* ctx, std::string& err) noexcept override
         {
@@ -1349,8 +1376,8 @@ namespace DDL_LEXER
             std::string headData = std::move(_head.strData);
             Ctx(ctx)->m_stackHead.pop_back();
 
-            auto found = Ctx(ctx)->m_varTable.find(headData);
-            if (Ctx(ctx)->m_varTable.end() == found)
+            auto foundVar = Ctx(ctx)->m_varTable.find(headData);
+            if (Ctx(ctx)->m_varTable.end() == foundVar)
             {
                 if (0 != body->_Name().IsNull() && body->GetAction())
                 {// 比如：
@@ -1364,27 +1391,37 @@ namespace DDL_LEXER
                     }
                 }
                 Ctx(ctx)->m_varTable.emplace(headData, body); // 直接绑定关系 (直接引用)
-                body->_SetName(headRef); // head 原始文本
-                return true;
             }
             else
             {
-                Variable* var = found->second;
-                if (var->IsMutable())
-                {
-#pragma warning("                  使得 var 的层级最小，（遇到 Action 终止优化）")
-                    //if (var 的 mut 只有一层)
-                    {
-                        var->_SwapMut(body);
-                        return true;
-                    }
-                }
-                else
+                Variable* var = foundVar->second;
+                if (!var->IsMutable())
                 {
                     err = "BUG xcxxxcxvsefwefwefwefwefwefwefwefwfwefwefwef\n";
                     return false;
                 }
+#pragma warning("  使得 var 的层级最小，（遇到 Action 终止优化）")
+                //if (var 的 mut 只有一层)
+                {
+                    var->_SwapMut(body);
+                    body = var;
+                }
             }
+
+            body->_SetName(headRef); // head 原始文本
+            if (headData.compare("root"))
+            { // 便携式 root
+                Ctx(ctx)->m_userRootRef = body;
+            }
+
+            auto foundAction = Ctx(ctx)->m_varActionTable.find(headData);
+            if (Ctx(ctx)->m_varActionTable.end() != foundAction)
+            { // 此变量被绑定了 Action
+                assert(nullptr == body->GetAction());
+                assert(nullptr != foundAction->second);
+                body->SetAction(foundAction->second);
+            }
+            return true;
         }
         _BULITIN_ACTIONS_DEFINE_END(BuiltinProductionStatementAc);
 
@@ -1398,10 +1435,7 @@ namespace DDL_LEXER
         typedef Lexer _Myt;
         typedef std::deque<Action*> ActionsHolders;
     public:
-        Lexer()
-        {
-            MakeInternal();
-        }
+        Lexer() { MakeInternal(); }
 
         ~Lexer() noexcept
         {
@@ -1409,10 +1443,7 @@ namespace DDL_LEXER
             DestoryActions(m_internalActions);
         }
 
-        VariableAllocator& GetVariableAllocator()
-        {
-            return m_variableAllocator;
-        }
+        VariableAllocator& GetVariableAllocator() { return m_variableAllocator; }
 
         // 线程无关
         bool SetGrammar(StrRef script, std::string& err) noexcept
@@ -1420,11 +1451,11 @@ namespace DDL_LEXER
             err.clear();
             ResetUserGraph();
 
-            std::size_t offset = 0;
-            ActionQueue aq;
-            internal::Context ctx(m_userVariablesTable, m_variableAllocator, 
-                m_memAllocator, m_userActionTable); 
-            if (ScanScript(script, offset, aq, err))
+            ActionQueue aq; // 不能将其合并到 Ctx 中
+            PreAllocAcQueue(aq, m_internalActions.size());
+            internal::Context ctx(m_userRoot, m_userVariablesTable, 
+                m_variableAllocator, m_memAllocator, m_userActionTable); 
+            if (ScanScript(script, *m_internalRoot, aq, &ctx, err))
             {
                 return LazyCalc(aq, &ctx, err);
             }
@@ -1432,19 +1463,39 @@ namespace DDL_LEXER
             return false;
         }
 
-        const Variable* GetVariable(const std::string& varName) const noexcept
+        Variable* GetVariable(const std::string& varName) const noexcept
         {
             return FindVariable(varName);
         }
 
-        // 销毁由 Alloc1Action() 接口创建的 UserAction
-        void ClearAction() noexcept
+        bool Parse(StrRef script, void* ctx, std::string& err) noexcept
         {
-            DestoryActions(m_userActions);
+            return Parse(m_userRoot, script, ctx, err);
         }
 
-        //  该接口用来创建用户自定义的 Action
-        // 从此接口创建的 Action，对象析构是自动的
+        bool Parse(Variable* root, StrRef script, void* ctx, std::string& err) noexcept
+        {
+            err.clear();
+            if (nullptr != root)
+            {
+                ActionQueue aq;  
+                PreAllocAcQueue(aq, m_userActions.size());
+                if (ScanScript(script, *root, aq, ctx, err))
+                {
+                    return LazyCalc(aq, ctx, err);
+                }
+
+                return false;
+            }
+
+            err = "illegal variable: `root`";
+            return false;
+        }
+
+        // 销毁由 Alloc1Action() 接口创建的 UserAction
+        void ClearAction() noexcept { DestoryActions(m_userActions); }
+
+        //  该接口用来创建用户自定义的 Action, 从此接口创建的 Action，对象析构是自动的
         template <class UserAction, class... Args,
             class = typename std::enable_if<std::is_base_of<Action, UserAction>::value>::type >
         Action* AllocAction(Args&&... args) noexcept
@@ -1475,27 +1526,34 @@ namespace DDL_LEXER
     private:
         bool LazyCalc(ActionQueue& aq, void* ctx, std::string& err) const noexcept
         {
+            std::size_t index = 0; // just for debug
             for (ActionQueueEle& ac : aq)
             {
                 if (! ac.action->Handler(ac.food, ctx, err))
                 {
                     return false;
-                }
+                } ++index; (void)index;
             }
             return true;
         }
 
-        bool ScanScript(const StrRef& script,
-            std::size_t offset, ActionQueue& aq, std::string& err) const noexcept
+        static bool ScanScript(const StrRef& script, Variable& root ,
+            ActionQueue& aq, void* ctx, std::string& err)  noexcept
         {
-            if (m_internalRoot->Scan(script, offset, aq, err))
+            std::size_t offset = 0;
+            if (root.Scan(script, offset, aq, ctx, err))
             {
-                return script.len == offset;
+                return script.Length() == offset;
             }
 
             return false;
         }
 
+        void PreAllocAcQueue(ActionQueue& aq, std::size_t cap) noexcept
+        {
+            aq.resize(cap); // aq.reserve(cap)
+            aq.clear();
+        }
 
         Variable* FindVariable(const std::string& varName) const noexcept
         {
@@ -1679,11 +1737,6 @@ namespace DDL_LEXER
 
 
             //// let var = var2, where a -> b, c -> d; // @TODO 这里是否要求 a 和 c 必须是非终结符或指向终结符的变量？ !!!!!!!!!!!!!! 后者无歧义？？？
-            //// let_where : 'let' head '=' var (','? 'where' operand '->' operand (','? operand '->' operand)*)?
-            //Variable* where_clause = Alloc<SyntaxSequence>("where_clause", semicolon_opt, where_keyword, operand_swap, operand_swap_some);
-            //Variable* where_clause_opt = Alloc<SyntaxLoop>("where_clause_opt", where_clause, 0u, 1u);
-            //Variable* let_where = Alloc<SyntaxSequence>("let_where", let_keyword, head, equal_mark, var, where_clause_opt);
-
             // let_where : 'let' head '=' var ','? 'where' operand '->' operand (','? operand '->' operand)*
             Variable* let_where = Alloc<SyntaxSequence>("let_where", let_keyword, head, equal_mark, var, 
                 semicolon_opt, where_keyword, operand_swap, operand_swap_some);
@@ -1710,29 +1763,27 @@ namespace DDL_LEXER
 
             // root:         statement_with_endmark + ;
             m_internalRoot = Alloc<SyntaxLoop>("root", statement_with_endmark, 1u, SyntaxLoop::Max);
-
+            if (nullptr == m_internalRoot)
+            {
+                Error("Fatal error:  Unable to initialize 'root' !");
+            }
 
             /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
             // Action
-            Bind(terminator, AllocInternalAction<BuiltinTerminatorAc>()) || Error("BUG: bind 'terminator' action");
-            Bind(ident, AllocInternalAction<BuiltinIdentAc>())           || Error("BUG: bind 'ident' action");
-            Bind(head, AllocInternalAction<BuiltinHeadAc>())             || Error("BUG: bind 'head' action");
-            Bind(var, AllocInternalAction<BuiltinVarAc>())               || Error("BUG: bind 'var' action");
-            Bind(operand, AllocInternalAction<BuiltinOperandAc>())       || Error("BUG: bind 'operand' action");
-            Bind(struct_expr, AllocInternalAction<BuiltinStructExprAc>())|| Error("BUG: bind 'struct_expr' action");
-            Bind(num_dec, AllocInternalAction<BuiltinNumDecAc>())        || Error("BUG: bind 'num_dec' action");
-            Bind(loop_symbol, AllocInternalAction<BuiltinLoopSymbolAc>())|| Error("BUG: bind 'loop_symbol' action");
-            Bind(loop_symbol_opt, AllocInternalAction<BuiltinLoopSymbolOptAc>()) || Error("BUG: bind 'loop_symbol_opt' action");
-            Bind(loop_expr, AllocInternalAction<BuiltinLoopExprAc>())    || Error("BUG: bind 'loop_expr' action");
-            Bind(seq_expr, AllocInternalAction<BuiltinSeqExprAc>())      || Error("BUG: bind 'seq_expr' action");
-            Bind(branch_expr_some, AllocInternalAction<BuiltinBranchExprSomeAc>()) || Error("BUG: bind 'branch_expr_some' action");
-            Bind(expr, AllocInternalAction<BuiltinExprAc>())             || Error("BUG: bind 'expr' action");
-            Bind(production_statement, AllocInternalAction<BuiltinProductionStatementAc>()) || Error("BUG: bind 'production_statement' action");
-            //  <---------------------  @TODO ------------------------------
-            // production_statement 要注册一个即时消费的 Action 用来记录，head 所指的 名字 -> 实际 Variable 的类型表， 这样就可以 不用前置声明，也不用 mut_var 
-            // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!---------------------------------------------------------!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-            // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!---------------------------------------------------------!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-            // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!---------------------------------------------------------!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+            SafeBind(terminator, AllocInternalAction<BuiltinTerminatorAc>()) || Error("BUG: bind 'terminator' action");
+            SafeBind(ident, AllocInternalAction<BuiltinIdentAc>())           || Error("BUG: bind 'ident' action");
+            SafeBind(head, AllocInternalAction<BuiltinHeadAc>())             || Error("BUG: bind 'head' action");
+            SafeBind(var, AllocInternalAction<BuiltinVarAc>())               || Error("BUG: bind 'var' action");
+            SafeBind(operand, AllocInternalAction<BuiltinOperandAc>())       || Error("BUG: bind 'operand' action");
+            SafeBind(struct_expr, AllocInternalAction<BuiltinStructExprAc>())|| Error("BUG: bind 'struct_expr' action");
+            SafeBind(num_dec, AllocInternalAction<BuiltinNumDecAc>())        || Error("BUG: bind 'num_dec' action");
+            SafeBind(loop_symbol, AllocInternalAction<BuiltinLoopSymbolAc>())|| Error("BUG: bind 'loop_symbol' action");
+            SafeBind(loop_symbol_opt, AllocInternalAction<BuiltinLoopSymbolOptAc>()) || Error("BUG: bind 'loop_symbol_opt' action");
+            SafeBind(loop_expr, AllocInternalAction<BuiltinLoopExprAc>())    || Error("BUG: bind 'loop_expr' action");
+            SafeBind(seq_expr, AllocInternalAction<BuiltinSeqExprAc>())      || Error("BUG: bind 'seq_expr' action");
+            SafeBind(branch_expr_some, AllocInternalAction<BuiltinBranchExprSomeAc>()) || Error("BUG: bind 'branch_expr_some' action");
+            SafeBind(expr, AllocInternalAction<BuiltinExprAc>())             || Error("BUG: bind 'expr' action");
+            SafeBind(production_statement, AllocInternalAction<BuiltinProductionStatementAc>()) || Error("BUG: bind 'production_statement' action");
             return true;
         } // MakeInteranlSyntax
 
@@ -1740,7 +1791,7 @@ namespace DDL_LEXER
         bool BindImpl(const std::string& var, Handler&& handler) noexcept
         {
             auto found = m_userActionTable.find(var);
-            if (m_userActionTable.end() != found)
+            if (m_userActionTable.end() == found)
             {
                 m_userActionTable.emplace(var, handler());
                 return true;
@@ -1749,7 +1800,7 @@ namespace DDL_LEXER
             return false;
         }
 
-        bool Bind(Variable* var, Action* action) noexcept
+        bool SafeBind(Variable* var, Action* action) noexcept
         {
             if (nullptr == var || nullptr == action)
             {
@@ -1793,21 +1844,21 @@ namespace DDL_LEXER
 
         void ResetUserGraph() noexcept
         {
-            m_userActions.clear();
-            m_userActionTable.clear();
             m_userVariablesTable.clear();
+            m_userRoot = nullptr;
         }
 
     private:
         Variable*              m_internalRoot;
-        VariableAllocator      m_variableAllocator;  
+        VariableAllocator      m_variableAllocator;    // 变量分配（内置和用户共用）
         ActionsHolders         m_internalActions;      // 内置文法动作集合
+        MemoryAllocator        m_memAllocator;         // 内存分配（内置和用户共用）
 
         // 以下是 DB
+        Variable*              m_userRoot = nullptr;
         ActionsHolders         m_userActions;          // 用户文法动作集合 
         ActionTable            m_userActionTable;      // 用户申请的动作表 
         VariableTable          m_userVariablesTable;   // 输出(1) 
-        MemoryAllocator        m_memAllocator;
     }; // class Lexer
 
     //////////////////////////////////////////////
