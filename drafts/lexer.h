@@ -1327,12 +1327,24 @@ namespace DDL_LEXER
         {
             std::size_t seqEleCnt = food.LoopCount();
             assert(seqEleCnt <= Ctx(ctx)->m_stackLoopExpr.size());
-            auto begin = Ctx(ctx)->m_stackLoopExpr.end() - seqEleCnt;
-            auto end   = Ctx(ctx)->m_stackLoopExpr.end();
-
             assert(0 != seqEleCnt); // Necessary ? 
-            SyntaxSequence* seqExpr = Ctx(ctx)->m_varAlloc.ForceAlloc<SyntaxSequence>(_range_arg, begin, end);
-            Ctx(ctx)->m_stackSeqExpr.push_back(seqExpr);
+
+            if (1u == seqEleCnt)
+            {
+                Ctx(ctx)->m_stackSeqExpr.push_back(Ctx(ctx)->m_stackLoopExpr.back());
+                Ctx(ctx)->m_stackLoopExpr.pop_back();
+            }
+            else
+            {
+                const std::size_t size = Ctx(ctx)->m_stackLoopExpr.size();
+                assert(seqEleCnt <= size);
+                auto begin = Ctx(ctx)->m_stackLoopExpr.end() - seqEleCnt;
+                auto end = Ctx(ctx)->m_stackLoopExpr.end();
+
+                SyntaxSequence* seqExpr = Ctx(ctx)->m_varAlloc.ForceAlloc<SyntaxSequence>(_range_arg, begin, end);
+                Ctx(ctx)->m_stackSeqExpr.push_back(seqExpr);
+                Ctx(ctx)->m_stackLoopExpr.resize(size - seqEleCnt);
+            }
             return true;
         }
         _BULITIN_ACTIONS_DEFINE_END(BuiltinSeqExprAc);
@@ -1354,12 +1366,22 @@ namespace DDL_LEXER
             std::size_t cnt = Ctx(ctx)->m_stackBranchExprSome.back() + 1u;
             Ctx(ctx)->m_stackBranchExprSome.pop_back();
 
-            assert(cnt <= Ctx(ctx)->m_stackSeqExpr.size());
-            auto begin = Ctx(ctx)->m_stackSeqExpr.end() - cnt;
-            auto end   = Ctx(ctx)->m_stackSeqExpr.end();
+            if (1 == cnt)
+            {
+                Ctx(ctx)->m_stackExpr.push_back(Ctx(ctx)->m_stackSeqExpr.back());
+                Ctx(ctx)->m_stackSeqExpr.pop_back();
+            }
+            else
+            {
+                const std::size_t size = Ctx(ctx)->m_stackSeqExpr.size();
+                assert(cnt <= size);
+                auto begin = Ctx(ctx)->m_stackSeqExpr.end() - cnt;
+                auto end = Ctx(ctx)->m_stackSeqExpr.end();
 
-            SyntaxBranch* branchPairs = Ctx(ctx)->m_varAlloc.ForceAlloc<SyntaxBranch>(_range_arg, begin, end);
-            Ctx(ctx)->m_stackExpr.push_back(branchPairs);
+                SyntaxBranch* branchPairs = Ctx(ctx)->m_varAlloc.ForceAlloc<SyntaxBranch>(_range_arg, begin, end);
+                Ctx(ctx)->m_stackExpr.push_back(branchPairs);
+                Ctx(ctx)->m_stackSeqExpr.resize(size - cnt);
+            }
             return true;
         }
         _BULITIN_ACTIONS_DEFINE_END(BuiltinExprAc);
