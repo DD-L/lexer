@@ -104,26 +104,31 @@ namespace DDL_LEXER
     class VariableType
     {
     public:
-        bool IsNormal()     const { return !IsMutable(); }
-        bool IsMutable()    const { return 0 != TopBit(); }
-        bool IsLoop()       const { return  Classify::_Loop == WipeTop(); }
-        bool IsBranch()     const { return Classify::_Branch == WipeTop(); }
-        bool IsSequence()   const { return Classify::_Sequence == WipeTop(); }
-        bool IsTerminator() const { return Classify::_Terminator == WipeTop(); }
-        bool IsDollarFunc() const { return Classify::_DollarFunc == WipeTop(); }
+        bool IsNormal()     const  noexcept { return !IsMutable(); }
+        bool IsMutable()    const  noexcept { return 0 != TopBit(); }
+        bool IsLoop()       const  noexcept { return  Classify::_Loop == WipeTop(); }
+        bool IsBranch()     const  noexcept { return Classify::_Branch == WipeTop(); }
+        bool IsSequence()   const  noexcept { return Classify::_Sequence == WipeTop(); }
+        bool IsTerminator() const  noexcept { return Classify::_Terminator == WipeTop(); }
+        bool IsDollarFunc() const  noexcept { return Classify::_DollarFunc == WipeTop(); }
 
-        void SetNormal()     { m_flag = WipeTop(); }
-        void SetMutable()    { m_flag |= (~(Classify::classMask)); }
-        void SetLoop()       { m_flag = KeepTop() | Classify::_Loop; }
-        void SetBranch()     { m_flag = KeepTop() | Classify::_Branch; }
-        void SetSequence()   { m_flag = KeepTop() | Classify::_Sequence; }
-        void SetTerminator() { m_flag = KeepTop() | Classify::_Terminator; }
-        void SetDollarFunc() { m_flag = KeepTop() | Classify::_DollarFunc; }
+        void SetNormal()     noexcept { m_flag = WipeTop(); }
+        void SetMutable()    noexcept { m_flag |= (~(Classify::classMask)); }
+        void SetLoop()       noexcept { m_flag = KeepTop() | Classify::_Loop; }
+        void SetBranch()     noexcept { m_flag = KeepTop() | Classify::_Branch; }
+        void SetSequence()   noexcept { m_flag = KeepTop() | Classify::_Sequence; }
+        void SetTerminator() noexcept { m_flag = KeepTop() | Classify::_Terminator; }
+        void SetDollarFunc() noexcept { m_flag = KeepTop() | Classify::_DollarFunc; }
+
+        void SetTypeKeepingTop(const VariableType& subVarType) noexcept
+        {
+            m_flag = KeepTop() | subVarType.WipeTop();
+        }
 
     private:
-        uint8_t WipeTop() const { return (m_flag & Classify::classMask); }
-        uint8_t KeepTop() const { return  m_flag & (~(Classify::classMask)); }
-        uint8_t TopBit() const  { return KeepTop() >> 7; }
+        uint8_t WipeTop() const noexcept { return (m_flag & Classify::classMask); }
+        uint8_t KeepTop() const noexcept { return  m_flag & (~(Classify::classMask)); }
+        uint8_t TopBit()  const noexcept { return KeepTop() >> 7; }
 
     private:
         enum Classify : uint8_t
@@ -276,6 +281,10 @@ namespace DDL_LEXER
          {
              oldMut = m_mut;
              m_mut = newMut;
+             if (nullptr != m_mut)
+             { // update type
+                 m_type.SetTypeKeepingTop(m_mut->Type());
+             }
          }
 
     protected:
@@ -1147,22 +1156,29 @@ namespace DDL_LEXER
         
         /// BuiltinVarAc
         _BULITIN_ACTIONS_DEFINE_BEGIN(BuiltinVarAc)
-        bool Handler(const Food& food, void* ctx, std::string&) noexcept override
+        bool Handler(const Food& food, void* ctx, std::string& err) noexcept override
         {
             std::string ident = Ctx(ctx)->m_stackIdent.back().ToStdString();
             Ctx(ctx)->m_stackIdent.pop_back();
 
+            Variable* var = nullptr;
             auto found = Ctx(ctx)->m_varTable.find(ident);
             if (Ctx(ctx)->m_varTable.end() == found)
             {// 当前变量表还不存在， 先创建一个 mut_var
                 Variable* mut = Ctx(ctx)->m_varAlloc.ForceAlloc<MutableVariable>();
                 if (nullptr == mut)
                 { // Error
+                    err = "Out of memory : ...";
                     return false;
                 }
                 Ctx(ctx)->m_varTable.emplace(ident, mut);
+                var = mut;
             }
-            Ctx(ctx)->m_stackVar.push_back(found->second);
+            else
+            {
+                var = found->second;
+            }
+            Ctx(ctx)->m_stackVar.push_back(var);
             return true;
         }
         _BULITIN_ACTIONS_DEFINE_END(BuiltinVarAc);
