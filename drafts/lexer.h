@@ -938,14 +938,14 @@ namespace DDL_LEXER
 
                     if (Is1To9(script[curOffset]))
                     {
-                        data = data * 10u + ((uint8_t)script[curOffset] - (uint8_t)'0');
+                        data = data * 10u + ((uint64_t)(script[curOffset]) - (uint64_t)'0');
                         ++curOffset;
 
                         while (curOffset < script.Length())
                         {
                             if (Is0To9(script[curOffset]))
                             {
-                                data = data * 10u + ((uint8_t)script[curOffset] - (uint8_t)'0');
+                                data = data * 10u + ((uint64_t)(script[curOffset]) - (uint64_t)'0');
                                 ++curOffset;
                             }
                             else
@@ -1898,20 +1898,7 @@ namespace DDL_LEXER
                 var->SetAction(action);
                 return true;
             } 
-            else
-            { // 再加一层 Action ???
-#pragma warning("")
-                // 兼容 
-                // ident : $Ident();
-                // head  : ident
-                // var   : ident;
-
-                // 其中：
-                // ident <- action
-                // head  <- action
-                // var   <- action
-                return false;
-            }
+            return false;
         }
 
         static bool Error(StrRef err)
