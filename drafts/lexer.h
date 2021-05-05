@@ -276,7 +276,7 @@ namespace DDL_LEXER
         }
 
         virtual bool Scan(const StrRef& script, Ingredients& ingredients,
-            ActionQueue& actions, void*, std::string& err) noexcept = 0;  // 空串使用 '' 表示
+            ActionQueue& actions, void*, std::string& err) const noexcept = 0;  // 空串使用 '' 表示
 
         bool IsMutable() const
         {
@@ -465,7 +465,7 @@ namespace DDL_LEXER
             }
 
             bool Scan(const StrRef& script, Ingredients& ingredients,
-                ActionQueue& actions, void* ctx, std::string& err) noexcept override
+                ActionQueue& actions, void* ctx, std::string& err) const noexcept override
             {
                 // 确保其他 Variable 衍生对象可以安全的重塑为 mut_var
                 static_assert(sizeof(MutableVariable) == sizeof(Variable), "Error"); 
@@ -523,7 +523,7 @@ namespace DDL_LEXER
                 return true;
             }
 
-            virtual bool Scan(const StrRef& script, Ingredients& ingredients, ActionQueue& actions, void* ctx, std::string& err) noexcept
+            bool Scan(const StrRef& script, Ingredients& ingredients, ActionQueue& actions, void* ctx, std::string& err) const noexcept override
             {
                 const std::size_t start = ingredients.offset; // origin
                 ingredients.Clean();
@@ -556,7 +556,7 @@ namespace DDL_LEXER
                 return false;
             }
         
-            virtual bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t&, std::string& err) noexcept
+            virtual bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t&, std::string& err) const noexcept
             {
                 if ((offset + m_token.Length()) <= script.Length())
                 {
@@ -612,7 +612,7 @@ namespace DDL_LEXER
                 return *this;
             }
 
-            bool Scan(const StrRef& script, Ingredients& ingredients, ActionQueue& actions, void* ctx, std::string& err) noexcept override
+            bool Scan(const StrRef& script, Ingredients& ingredients, ActionQueue& actions, void* ctx, std::string& err) const noexcept override
             {
                 ingredients.Clean();
                 std::size_t cnt = 0;
@@ -676,7 +676,7 @@ namespace DDL_LEXER
                 m_branches.push_back(var);
             }
 
-            bool Scan(const StrRef& script, Ingredients& ingredients, ActionQueue& actions, void* ctx, std::string& err) noexcept override
+            bool Scan(const StrRef& script, Ingredients& ingredients, ActionQueue& actions, void* ctx, std::string& err) const noexcept override
             {
                 const std::size_t start = ingredients.offset;
                 for (std::size_t index = 0; index < m_branches.size(); ++index)
@@ -726,7 +726,7 @@ namespace DDL_LEXER
                 m_type.SetLoop();
             }
 
-            bool Scan(const StrRef& script, Ingredients& ingredients, ActionQueue& actions, void* ctx, std::string& err) noexcept override
+            bool Scan(const StrRef& script, Ingredients& ingredients, ActionQueue& actions, void* ctx, std::string& err) const noexcept override
             {
                 const std::size_t start = ingredients.offset;
                 std::size_t cnt = 0;
@@ -781,7 +781,7 @@ namespace DDL_LEXER
             using SyntaxToken::SyntaxToken;
 
         private:
-            bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t&, std::string& err) noexcept override
+            bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t&, std::string& err) const noexcept override
             { // [_a-z-A-Z][_0-9a-zA-Z]*// 最小要求是一个字符
                 std::size_t curOffset = offset;
                 if (curOffset >= script.Length())
@@ -824,7 +824,7 @@ namespace DDL_LEXER
             // 白字符不作为 Token 
             BuiltinWhite() { m_type.Reset(); }
 
-            bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t&, std::string&) noexcept override
+            bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t&, std::string&) const noexcept override
             {
                 if (offset < script.Length() && IsWhite(script[offset]))
                 {
@@ -855,7 +855,7 @@ namespace DDL_LEXER
             // 注释不作为 Token 
             BuildinComment() { m_type.Reset(); }
 
-            bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t&, std::string&) noexcept override
+            bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t&, std::string&) const noexcept override
             {
                 if (offset < script.Length() && ('#' == script[offset]))
                 {
@@ -878,7 +878,7 @@ namespace DDL_LEXER
 
         class BuiltinPunct : public SyntaxToken
         { // ispunct : !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~ 
-            bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t&, std::string&) noexcept override
+            bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t&, std::string&) const noexcept override
             {
                 if (offset < script.Length())
                 {
@@ -899,7 +899,7 @@ namespace DDL_LEXER
             BuiltinTokenRightZeroWidthAssertion() { m_type.Reset(); } // 零宽断言不能作为 Token
 
             // $|\s|[\x21–\x2F\x3A–\x40\x5B–\x60\x7B–\x7E]
-            bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t&, std::string&) noexcept override
+            bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t&, std::string&) const noexcept override
             {
                 const std::size_t _offset = offset; // 不消耗字符
                 if (_offset == script.Length())
@@ -922,7 +922,7 @@ namespace DDL_LEXER
         public:
             using SyntaxToken::SyntaxToken;
 
-            bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t& data, std::string& err) noexcept override
+            bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t& data, std::string& err) const noexcept override
             { // 十进制自然数
                 std::size_t curOffset = offset;
                 if (curOffset < script.Length())
@@ -972,7 +972,7 @@ namespace DDL_LEXER
             using SyntaxToken::SyntaxToken;
 
             // 1. 单引号不支持转义，2. 双引号支持转义 3. 支持正则表达式
-            bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t&, std::string& err) noexcept override
+            bool ScanImpl(const StrRef& script, std::size_t& offset, uint64_t&, std::string& err) const noexcept override
             {
                 // 1. 单引号：      '[^']+
                 // 2. 双引号：      暂不实现
